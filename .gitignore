@@ -1,0 +1,17 @@
+# Rust build output
+target/
+
+# Local implementation workflow records
+.superpowers/
+
+# Local environment and logs
+.env
+.env.*
+*.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~

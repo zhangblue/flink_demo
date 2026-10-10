@@ -1,0 +1,14 @@
+[kafka]
+brokers = "192.168.250.106:9092"
+topic = "flink_demo"
+compression = "lz4"
+message_timeout_ms = 5000
+
+[simulation]
+device_count = 100
+messages_per_second = 500
+startup_interval_min_secs = 30
+startup_interval_max_secs = 120
+installed_apps_min = 20
+installed_apps_max = 80
+channel_capacity = 10000
