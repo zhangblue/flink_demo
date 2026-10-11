@@ -119,6 +119,10 @@ impl<R: Rng> SimulatedDevice<R> {
     pub fn new(mut rng: R, app_count: RangeInclusive<usize>) -> Self {
         assert!(!app_count.is_empty(), "app_count must be nonempty");
         assert!(
+            *app_count.start() >= 1,
+            "app_count lower bound must be at least 1"
+        );
+        assert!(
             *app_count.end() <= MAX_INSTALLED_APPS,
             "app_count exceeds limit"
         );
@@ -635,6 +639,46 @@ mod tests {
     #[should_panic(expected = "app_count exceeds limit")]
     fn constructor_rejects_oversized_app_range() {
         SimulatedDevice::new(StdRng::seed_from_u64(24), 1..=MAX_INSTALLED_APPS + 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "app_count lower bound must be at least 1")]
+    fn constructor_rejects_zero_only_app_range() {
+        SimulatedDevice::new(ConstantRng, 0..=0);
+    }
+
+    #[test]
+    #[should_panic(expected = "app_count lower bound must be at least 1")]
+    fn constructor_rejects_zero_lower_bound_with_positive_upper_bound() {
+        SimulatedDevice::new(ConstantRng, 0..=7);
+    }
+
+    #[test]
+    fn selected_package_is_reselected_across_cycles_and_can_be_system_app() {
+        // A fixed seed makes this repeatable. Selecting only the first app or
+        // caching one selection at initialization must fail these assertions.
+        let mut device = SimulatedDevice::new(StdRng::seed_from_u64(7), 7..=7);
+        let mut selected_packages = HashSet::new();
+        let mut selected_system_app = false;
+        for cycle_index in 0..64 {
+            let cycle = device.next_cycle(1_000 + cycle_index, 2_000 + cycle_index);
+            let app = cycle
+                .iter()
+                .find_map(|event| match &event.payload {
+                    EventPayload::App(value) => Some(value),
+                    _ => None,
+                })
+                .expect("app payload");
+            selected_system_app |= app.apps.iter().any(|installed| {
+                installed.is_system_app && installed.package_name == app.self_package_name
+            });
+            selected_packages.insert(app.self_package_name.clone());
+        }
+        assert!(
+            selected_packages.len() > 1,
+            "selection must vary across cycles"
+        );
+        assert!(selected_system_app, "system apps must be selectable");
     }
 
     #[test]

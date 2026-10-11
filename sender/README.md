@@ -249,7 +249,9 @@ channel_capacity = 10000
 
 按 `protol_type` 将四种 payload 分流反序列化。将 `event_timestamp` 解释为 Unix epoch **milliseconds**，再作为事件时间及 watermark 的输入；不要按秒解析，也不要依赖不存在的 `event_time` 字段。Kafka 分区顺序只保证同一 `udid` 的 record 顺序，不代表不同设备之间有全局顺序。
 
-将 `app.payload.self_package_name` 定义为必填 `STRING`，并可用 `app.payload.apps` 安装列表校验其包名存在性；同一启动周期内该字段应与 `start.payload.app_package` 相同。
+新版 `app` 消息的 `payload.self_package_name` 是必填字符串，消费端应将其加入对应的数据结构（Flink 中可用 `STRING`），并可用 `app.payload.apps` 安装列表校验其包名存在性。旧 Kafka 历史消息没有该字段，重放时消费者需按自身策略兼容缺失值，例如允许为空、补充默认值或分版本处理。
+
+`start.payload.app_package` 从旧的固定示例值 `com.example.demo` 改为每个启动周期从该设备完整安装列表中随机选择，并与同一周期的 `app.payload.self_package_name` 一致；这是有意的语义变化，系统 App 也可能被选中。
 
 ## 测试
 
