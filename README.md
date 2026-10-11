@@ -5,7 +5,7 @@
 ## 核心能力
 
 - 同一设备在进程生命周期内保持固定的 `udid`。
-- 每次 App 启动生成新的 `start_id`，该周期内的所有事件共享此 ID。
+- 每次 App 启动使用启动时刻的 Unix 毫秒值作为 `start_id`，该周期内的所有事件共享此 ID。
 - 每个启动周期严格先发送 `start`，再发送 `devinfo`，随后随机发送 `environment` 与 `app`。
 - 多设备通过 Tokio 并发运行，所有设备共享一个可配置的全局发送速率。
 - Kafka record key 使用 `udid`，确保同一设备的事件进入同一分区并保持顺序。
@@ -84,8 +84,8 @@ RUST_LOG=debug cargo run --manifest-path sender/Cargo.toml -- --config sender/co
 | `event_id` | string | 单条事件的 UUID v4 |
 | `protol_type` | string | `start`、`devinfo`、`environment` 或 `app` |
 | `udid` | string | 设备 UUID v4，同一设备固定 |
-| `start_id` | string | 启动周期 UUID v4，同一周期固定 |
-| `event_timestamp` | integer | Unix epoch 毫秒时间戳 |
+| `start_id` | integer | 启动周期开始时的 Unix epoch 毫秒值，同一周期固定；Flink 使用 `BIGINT` |
+| `event_timestamp` | integer | 单条消息生成时的 Unix epoch 毫秒值，与 `start_id` 独立 |
 | `sequence` | integer | 启动周期内从 1 开始递增的序号 |
 | `payload` | object | 对应事件类型的数据对象 |
 
@@ -99,7 +99,7 @@ RUST_LOG=debug cargo run --manifest-path sender/Cargo.toml -- --config sender/co
 start → devinfo → environment/app（随机顺序）
 ```
 
-不同设备的消息可以交错。下游建议按 `udid` 与 `start_id` 分组，并依据 `sequence` 还原周期内顺序。
+不同设备的消息可以交错，也可能具有相同的毫秒 `start_id`。下游应按 `udid` 与 `start_id` 组合分组，并依据 `sequence` 还原周期内顺序。多个事件可能在同一毫秒生成，因此不要使用 `event_timestamp` 代替 `sequence` 排序。
 
 ## 验证
 

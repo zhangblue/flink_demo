@@ -50,12 +50,17 @@ pub async fn run_device<R: Rng + Send + 'static>(
             return;
         }
 
-        let timestamp_ms = SystemTime::now()
+        let start_timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis()
             .min(i64::MAX as u128) as i64;
-        for event in device.next_cycle(timestamp_ms) {
+        let event_timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        for event in device.next_cycle(start_timestamp_ms, event_timestamp_ms) {
             if sender.send(event).await.is_err() {
                 return;
             }
@@ -254,15 +259,15 @@ mod tests {
         let namespace_c = device_namespace(123, 1);
         let first_id =
             SimulatedDevice::with_namespace(StdRng::seed_from_u64(99), 1..=1, namespace_a)
-                .next_cycle(1_000)[0]
+                .next_cycle(1_000, 2_000)[0]
                 .event_id;
         let second_id =
             SimulatedDevice::with_namespace(StdRng::seed_from_u64(99), 1..=1, namespace_b)
-                .next_cycle(1_000)[0]
+                .next_cycle(1_000, 2_000)[0]
                 .event_id;
         let third_id =
             SimulatedDevice::with_namespace(StdRng::seed_from_u64(99), 1..=1, namespace_c)
-                .next_cycle(1_000)[0]
+                .next_cycle(1_000, 2_000)[0]
                 .event_id;
         assert_ne!(first_id, second_id);
         assert_ne!(first_id, third_id);

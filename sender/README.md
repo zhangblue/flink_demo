@@ -51,7 +51,7 @@ channel_capacity = 10000
 
 另有两项联合预算：设备常驻安装列表 `device_count × installed_apps_max ≤ 1,000,000`，channel 内事件复制的安装列表 `channel_capacity × installed_apps_max ≤ 1,000,000`。默认值分别为 8,000 与 800,000。程序在连接 Kafka、启动设备任务之前校验配置；超限、乘法溢出或区间无效会报错退出。
 
-`app` 事件 JSON value 的生成预算为 900,000 字节，给默认约 1,000,000 字节的 Kafka 消息上限留出空间；producer 客户端的 `message.max.bytes` 固定为 1,000,000，这不会提高 broker 的接收上限。4,000 项边界在当前生成器中序列化的构造上界为 890,018 字节。若更改字段或生成规则，应重新验证此预算；broker 或 topic 配置若更严格，仍需相应调低上限。
+`app` 事件 JSON value 的生成预算为 900,000 字节，给默认约 1,000,000 字节的 Kafka 消息上限留出空间；producer 客户端的 `message.max.bytes` 固定为 1,000,000，这不会提高 broker 的接收上限。4,000 项边界在当前生成器中序列化的构造上界为 890,000 字节。若更改字段或生成规则，应重新验证此预算；broker 或 topic 配置若更严格，仍需相应调低上限。
 
 ## 公共数据契约
 
@@ -62,12 +62,12 @@ channel_capacity = 10000
 | `event_id` | string | 每条事件唯一的 UUID v4 |
 | `protol_type` | string | `start`、`devinfo`、`environment` 或 `app` |
 | `udid` | string | 设备 UUID v4；同一设备在进程生命周期内保持稳定 |
-| `start_id` | string | 本次启动的 UUID v4；每个启动周期更新，该周期四条消息相同 |
-| `event_timestamp` | integer | 事件生成时刻的 Unix 毫秒时间戳 |
+| `start_id` | integer | 本次启动开始时的 Unix 毫秒值；每个启动周期更新，该周期四条消息相同；Flink 使用 `BIGINT` |
+| `event_timestamp` | integer | 单条消息生成时刻的 Unix 毫秒时间戳，与 `start_id` 独立 |
 | `sequence` | integer | 当前启动周期内从 1 开始递增的无符号序号 |
 | `payload` | object | 由 `protol_type` 决定的类型专属数据 |
 
-每次启动依次发送 `start`（sequence 1）、`devinfo`（sequence 2），随后以随机顺序发送 `environment` 与 `app`（sequence 3、4）；默认每类各一条。一个周期中的 `udid` 和 `start_id` 相同，每条 `event_id` 唯一。Kafka key 使用 `udid`，使同一设备进入同一分区并保持发送顺序。不同设备的消息可交错；消费端应按 `udid`、`start_id` 分组并按 `sequence` 理解周期顺序。下游可忽略未知字段，但不应静默删除或更名本文列出的必填字段；演进时优先新增可选字段。
+每次启动依次发送 `start`（sequence 1）、`devinfo`（sequence 2），随后以随机顺序发送 `environment` 与 `app`（sequence 3、4）；默认每类各一条。一个周期中的 `udid` 和 `start_id` 相同，每条 `event_id` 唯一。Kafka key 使用 `udid`，使同一设备进入同一分区并保持发送顺序。不同设备可能具有相同的毫秒 `start_id`，消费端应使用 `(udid, start_id)` 标识启动周期并按 `sequence` 理解周期顺序。`event_timestamp` 在消息生成时独立采集，不从 `start_id` 派生；同一批消息可能具有相同值。下游可忽略未知字段，但不应静默删除或更名本文列出的必填字段；演进时优先新增可选字段。
 
 ### `start`
 
@@ -78,7 +78,7 @@ channel_capacity = 10000
   "event_id": "00000000-0000-4001-8000-00000000002a",
   "protol_type": "start",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142381,
   "sequence": 1,
   "payload": {
@@ -112,7 +112,7 @@ channel_capacity = 10000
   "event_id": "00000000-0000-4002-8000-00000000002a",
   "protol_type": "devinfo",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142382,
   "sequence": 2,
   "payload": {
@@ -160,7 +160,7 @@ channel_capacity = 10000
   "event_id": "00000000-0000-4003-8000-00000000002a",
   "protol_type": "environment",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142383,
   "sequence": 3,
   "payload": {
@@ -206,7 +206,7 @@ channel_capacity = 10000
   "event_id": "00000000-0000-4004-8000-00000000002a",
   "protol_type": "app",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142384,
   "sequence": 4,
   "payload": {

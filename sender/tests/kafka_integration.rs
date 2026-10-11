@@ -82,13 +82,17 @@ async fn sends_and_consumes_one_ordered_startup_cycle() {
 
         let seed = rand::random::<u64>();
         let mut device = SimulatedDevice::new(StdRng::seed_from_u64(seed), 2..=2);
-        let now = SystemTime::now()
+        let start_timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
-        let events = device.next_cycle(now);
+        let event_timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let events = device.next_cycle(start_timestamp_ms, event_timestamp_ms);
         let udid = device.udid().to_string();
-        let start_id = events[0].start_id.to_string();
+        let start_id = events[0].start_id;
         let event_ids: HashSet<String> = events
             .iter()
             .map(|event| event.event_id.to_string())
@@ -129,7 +133,7 @@ async fn sends_and_consumes_one_ordered_startup_cycle() {
                 Some(udid.as_bytes()),
                 "Kafka key must equal udid"
             );
-            assert_eq!(value["start_id"], start_id);
+            assert_eq!(value["start_id"].as_i64(), Some(start_id));
             received.push((message.partition(), message.offset(), value));
         }
 

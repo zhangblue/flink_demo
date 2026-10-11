@@ -383,7 +383,7 @@ mod tests {
                 event_id: Uuid::from_u128(index as u128 + 1),
                 protol_type: ProtocolType::Start,
                 udid: Uuid::from_u128(100 + index as u128),
-                start_id: Uuid::from_u128(200 + index as u128),
+                start_id: 1_700_000_000_000 + index as i64,
                 event_timestamp: 1_700_000_000_000,
                 sequence: 1,
                 payload: EventPayload::Start(StartPayload {

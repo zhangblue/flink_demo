@@ -109,7 +109,7 @@ pub struct SimulatedDevice<R = rand::rngs::StdRng> {
     profile: DeviceProfile,
     installed_apps: Vec<InstalledApp>,
     apps_initialized: bool,
-    last_cycle_end: Option<i64>,
+    last_start_id: Option<i64>,
     uuid_prefix: [u8; 8],
     next_uuid_counter: u64,
     rng: R,
@@ -168,7 +168,7 @@ impl<R: Rng> SimulatedDevice<R> {
             profile,
             installed_apps,
             apps_initialized: false,
-            last_cycle_end: None,
+            last_start_id: None,
             uuid_prefix,
             next_uuid_counter: 0,
             rng,
@@ -191,18 +191,20 @@ impl<R: Rng> SimulatedDevice<R> {
         device
     }
 
-    pub fn next_cycle(&mut self, base_timestamp: i64) -> Vec<MobileEvent> {
-        let max_base = i64::MAX - 3;
-        let base_timestamp = base_timestamp.min(max_base);
-        let base_timestamp = match self.last_cycle_end {
-            Some(last_end) => {
-                let next_start = last_end.checked_add(1).expect("timestamp range exhausted");
-                assert!(next_start <= max_base, "timestamp range exhausted");
-                base_timestamp.max(next_start)
+    pub fn next_cycle(
+        &mut self,
+        start_timestamp_ms: i64,
+        event_timestamp_ms: i64,
+    ) -> Vec<MobileEvent> {
+        let start_id = match self.last_start_id {
+            Some(last_start_id) => {
+                let next_start_id = last_start_id
+                    .checked_add(1)
+                    .expect("start_id timestamp exhausted");
+                start_timestamp_ms.max(next_start_id)
             }
-            None => base_timestamp,
+            None => start_timestamp_ms,
         };
-        let start_id = self.next_unique_uuid();
         let battery_level = self.rng.random_range(0..=100);
         let network_type = ["wifi", "4g", "5g"][self.rng.random_range(0..3)].to_owned();
         let profile = self.profile;
@@ -251,7 +253,7 @@ impl<R: Rng> SimulatedDevice<R> {
             is_vpn: self.rng.random_bool(0.1),
         });
         let app_first = self.rng.random_bool(0.5);
-        let collected_at = base_timestamp.saturating_add(if app_first { 2 } else { 3 });
+        let collected_at = event_timestamp_ms;
         if !self.apps_initialized {
             for installed_app in &mut self.installed_apps {
                 let installed_ago = self.rng.random_range(30..=730) * 86_400_000_i64;
@@ -285,12 +287,12 @@ impl<R: Rng> SimulatedDevice<R> {
                 protol_type,
                 udid: self.udid,
                 start_id,
-                event_timestamp: base_timestamp + index as i64,
+                event_timestamp: event_timestamp_ms,
                 sequence: index as u32 + 1,
                 payload,
             })
             .collect();
-        self.last_cycle_end = Some(base_timestamp + 3);
+        self.last_start_id = Some(start_id);
         events
     }
 
@@ -365,7 +367,7 @@ mod tests {
                     MAX_INSTALLED_APPS..=MAX_INSTALLED_APPS,
                 );
                 let event = device
-                    .next_cycle(base)
+                    .next_cycle(base, base)
                     .into_iter()
                     .find(|event| event.protol_type == ProtocolType::App)
                     .unwrap();
@@ -393,7 +395,7 @@ mod tests {
         }
         worst.apps_initialized = true;
         let event = worst
-            .next_cycle(i64::MIN)
+            .next_cycle(i64::MIN, i64::MIN)
             .into_iter()
             .find(|event| event.protol_type == ProtocolType::App)
             .unwrap();
@@ -410,7 +412,7 @@ mod tests {
     #[test]
     fn one_cycle_starts_with_start_then_devinfo() {
         let mut device = fixture_device(7);
-        let cycle = device.next_cycle(1_791_614_142_381);
+        let cycle = device.next_cycle(1_791_614_142_000, 1_791_614_142_381);
         assert_eq!(cycle.len(), 4);
         assert_eq!(cycle[0].protol_type, ProtocolType::Start);
         assert_eq!(cycle[1].protol_type, ProtocolType::Devinfo);
@@ -442,31 +444,27 @@ mod tests {
     #[test]
     fn both_later_event_orders_occur_with_fixed_seeds() {
         let orders = (0..64)
-            .map(|seed| fixture_device(seed).next_cycle(1000)[2].protol_type)
+            .map(|seed| fixture_device(seed).next_cycle(1000, 2000)[2].protol_type)
             .collect::<Vec<_>>();
         assert!(orders.contains(&ProtocolType::Environment));
         assert!(orders.contains(&ProtocolType::App));
     }
 
     #[test]
-    fn high_base_is_clamped_to_four_distinct_timestamps() {
-        let cycle = fixture_device(21).next_cycle(i64::MAX);
-        assert_eq!(
-            cycle.iter().map(|e| e.event_timestamp).collect::<Vec<_>>(),
-            vec![i64::MAX - 3, i64::MAX - 2, i64::MAX - 1, i64::MAX]
-        );
+    fn maximum_start_id_keeps_independent_event_timestamp() {
+        let cycle = fixture_device(21).next_cycle(i64::MAX, 1234);
+        assert!(cycle.iter().all(|event| event.start_id == i64::MAX));
+        assert!(cycle.iter().all(|event| event.event_timestamp == 1234));
     }
 
     #[test]
-    fn backward_base_is_promoted_past_previous_cycle() {
+    fn event_timestamp_can_move_backward_independently() {
         let mut device = fixture_device(22);
-        let first = device.next_cycle(1000);
-        let second = device.next_cycle(1);
-        assert_eq!(first[3].event_timestamp, 1003);
-        assert_eq!(
-            second.iter().map(|e| e.event_timestamp).collect::<Vec<_>>(),
-            vec![1004, 1005, 1006, 1007]
-        );
+        let first = device.next_cycle(1000, 9000);
+        let second = device.next_cycle(1, 8000);
+        assert!(first.iter().all(|event| event.event_timestamp == 9000));
+        assert!(second.iter().all(|event| event.event_timestamp == 8000));
+        assert_eq!(second[0].start_id, 1001);
         let app = second
             .iter()
             .find_map(|e| match &e.payload {
@@ -482,11 +480,11 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_exhaustion_is_explicit() {
+    fn start_id_timestamp_exhaustion_is_explicit() {
         let mut device = fixture_device(23);
-        device.next_cycle(i64::MAX);
+        device.next_cycle(i64::MAX, 1000);
         let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.next_cycle(0)));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.next_cycle(0, 2000)));
         assert!(result.is_err());
     }
 
@@ -494,7 +492,7 @@ mod tests {
     fn repeated_random_bytes_still_produce_unique_ids() {
         let mut device = SimulatedDevice::new(ConstantRng, 1..=1);
         let events = (0..10)
-            .flat_map(|n| device.next_cycle(n * 10))
+            .flat_map(|n| device.next_cycle(n * 10, n * 10 + 1))
             .collect::<Vec<_>>();
         assert_eq!(
             events
@@ -559,7 +557,7 @@ mod tests {
         let mut seen_ios = false;
         for seed in 0..64 {
             let mut device = SimulatedDevice::new(StdRng::seed_from_u64(seed), 7..=7);
-            let cycle = device.next_cycle(1000);
+            let cycle = device.next_cycle(1000, 2000);
             let EventPayload::Devinfo(info) = &cycle[1].payload else {
                 panic!("devinfo")
             };
@@ -610,8 +608,8 @@ mod tests {
     fn epoch_zero_install_time_is_not_reinitialized() {
         let mut device = SimulatedDevice::new(ConstantRng, 1..=1);
         let thirty_days_ms = 30 * 86_400_000_i64;
-        let first = device.next_cycle(thirty_days_ms - 2);
-        let second = device.next_cycle(thirty_days_ms + 100);
+        let first = device.next_cycle(thirty_days_ms - 2, thirty_days_ms);
+        let second = device.next_cycle(thirty_days_ms + 100, thirty_days_ms + 102);
         let installed_at = |cycle: &[MobileEvent]| {
             cycle
                 .iter()
@@ -637,7 +635,7 @@ mod tests {
             .map(|seed| {
                 let mut device = SimulatedDevice::new(StdRng::seed_from_u64(seed), 2..=3);
                 device
-                    .next_cycle(1000)
+                    .next_cycle(1000, 2000)
                     .iter()
                     .find_map(|e| match &e.payload {
                         EventPayload::App(value) => Some(value.apps.len()),
@@ -652,13 +650,16 @@ mod tests {
     #[test]
     fn udid_is_stable_and_start_id_changes_each_cycle() {
         let mut device = fixture_device(9);
-        let first = device.next_cycle(1000);
-        let second = device.next_cycle(2000);
+        let first = device.next_cycle(1000, 5000);
+        let second = device.next_cycle(2000, 6000);
         assert!(first.iter().all(|e| e.udid == device.udid()));
         assert!(second.iter().all(|e| e.udid == device.udid()));
-        assert_ne!(first[0].start_id, second[0].start_id);
+        assert_eq!(first[0].start_id, 1000);
+        assert_eq!(second[0].start_id, 2000);
         assert!(first.iter().all(|e| e.start_id == first[0].start_id));
         assert!(second.iter().all(|e| e.start_id == second[0].start_id));
+        assert!(first.iter().all(|e| e.event_timestamp == 5000));
+        assert!(second.iter().all(|e| e.event_timestamp == 6000));
         assert_eq!(
             first
                 .iter()
@@ -671,14 +672,26 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_increase_and_cycle_values_agree() {
+    fn start_id_increases_when_start_clock_repeats_or_moves_backward() {
+        let mut device = fixture_device(10);
+        let first = device.next_cycle(1000, 9000);
+        let repeated = device.next_cycle(1000, 8000);
+        let backward = device.next_cycle(1, 7000);
+
+        assert_eq!(first[0].start_id, 1000);
+        assert_eq!(repeated[0].start_id, 1001);
+        assert_eq!(backward[0].start_id, 1002);
+        assert!(backward.iter().all(|event| event.event_timestamp == 7000));
+    }
+
+    #[test]
+    fn event_timestamps_use_generation_time_and_cycle_values_agree() {
         let mut device = fixture_device(11);
-        let cycle = device.next_cycle(1_791_614_142_381);
-        assert_eq!(cycle[0].event_timestamp, 1_791_614_142_381);
+        let cycle = device.next_cycle(1_791_614_142_000, 1_791_614_142_381);
         assert!(
             cycle
-                .windows(2)
-                .all(|pair| pair[1].event_timestamp > pair[0].event_timestamp)
+                .iter()
+                .all(|event| event.event_timestamp == 1_791_614_142_381)
         );
         let EventPayload::Start(start) = &cycle[0].payload else {
             panic!("start payload")
@@ -697,7 +710,7 @@ mod tests {
     #[test]
     fn resource_values_and_app_times_are_bounded() {
         let mut device = SimulatedDevice::new(StdRng::seed_from_u64(13), 12..=12);
-        let cycle = device.next_cycle(1_791_614_142_381);
+        let cycle = device.next_cycle(1_791_614_142_000, 1_791_614_142_381);
         let EventPayload::Devinfo(devinfo) = &cycle[1].payload else {
             panic!("devinfo payload")
         };
@@ -734,8 +747,8 @@ mod tests {
     #[test]
     fn installed_app_history_stays_with_device() {
         let mut device = fixture_device(17);
-        let first = device.next_cycle(1_791_614_142_381);
-        let second = device.next_cycle(1_791_614_242_381);
+        let first = device.next_cycle(1_791_614_142_000, 1_791_614_142_381);
+        let second = device.next_cycle(1_791_614_242_000, 1_791_614_242_381);
         let first_event = first
             .iter()
             .find(|e| e.protol_type == ProtocolType::App)
@@ -764,7 +777,7 @@ mod tests {
     fn platform_profile_and_app_ids_agree() {
         for seed in 0..64 {
             let mut device = fixture_device(seed);
-            let cycle = device.next_cycle(1_791_614_142_381);
+            let cycle = device.next_cycle(1_791_614_142_000, 1_791_614_142_381);
             let EventPayload::Devinfo(info) = &cycle[1].payload else {
                 panic!("devinfo payload")
             };

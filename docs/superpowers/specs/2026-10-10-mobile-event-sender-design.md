@@ -9,7 +9,7 @@
 ## 2. 核心约束
 
 - 同一台模拟手机在进程生命周期内始终使用相同 `udid`。
-- 每次 App 启动生成新的 `start_id`；属于同一次启动的全部消息共享该值。
+- 每次 App 启动使用启动时刻的 Unix 毫秒值作为 `start_id`；属于同一次启动的全部消息共享该值。
 - 每次启动必须先发送 `start`，再发送 `devinfo`；`environment` 与 `app` 的先后顺序随机。
 - 每种类型在一个启动周期内默认发送一次，共四条消息。
 - `sequence` 从 1 开始严格递增：`start` 为 1，`devinfo` 为 2，其余为 3、4。
@@ -40,7 +40,7 @@ DeviceTask(1..N) -> bounded Tokio mpsc -> global rate limiter -> Kafka FuturePro
   "event_id": "00000000-0000-4001-8000-00000000002a",
   "protol_type": "start",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142381,
   "sequence": 1,
   "payload": {}
@@ -52,8 +52,8 @@ DeviceTask(1..N) -> bounded Tokio mpsc -> global rate limiter -> Kafka FuturePro
 | `event_id` | string | 每条事件唯一的 UUID v4 |
 | `protol_type` | string | 枚举：`start`、`devinfo`、`environment`、`app` |
 | `udid` | string | 设备唯一 UUID v4；同一设备跨启动保持不变 |
-| `start_id` | string | 启动周期 UUID v4；每次启动更新，同一周期保持不变 |
-| `event_timestamp` | integer | 事件生成时刻的 Unix 毫秒时间戳 |
+| `start_id` | integer | 启动周期开始时的 Unix 毫秒值；每次启动更新，同一周期保持不变；Flink 使用 `BIGINT` |
+| `event_timestamp` | integer | 单条事件生成时刻的 Unix 毫秒时间戳，与 `start_id` 独立 |
 | `sequence` | integer | 当前启动周期内从 1 开始递增的无符号整数 |
 | `payload` | object | 由 `protol_type` 决定的类型专属对象 |
 
@@ -68,7 +68,7 @@ DeviceTask(1..N) -> bounded Tokio mpsc -> global rate limiter -> Kafka FuturePro
   "event_id": "00000000-0000-4001-8000-00000000002a",
   "protol_type": "start",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142381,
   "sequence": 1,
   "payload": {
@@ -102,7 +102,7 @@ DeviceTask(1..N) -> bounded Tokio mpsc -> global rate limiter -> Kafka FuturePro
   "event_id": "00000000-0000-4002-8000-00000000002a",
   "protol_type": "devinfo",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142382,
   "sequence": 2,
   "payload": {
@@ -150,7 +150,7 @@ DeviceTask(1..N) -> bounded Tokio mpsc -> global rate limiter -> Kafka FuturePro
   "event_id": "00000000-0000-4003-8000-00000000002a",
   "protol_type": "environment",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142383,
   "sequence": 3,
   "payload": {
@@ -196,7 +196,7 @@ DeviceTask(1..N) -> bounded Tokio mpsc -> global rate limiter -> Kafka FuturePro
   "event_id": "00000000-0000-4004-8000-00000000002a",
   "protol_type": "app",
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
-  "start_id": "00000000-0000-4000-8000-00000000002a",
+  "start_id": 1791614142000,
   "event_timestamp": 1791614142384,
   "sequence": 4,
   "payload": {
@@ -237,7 +237,7 @@ DeviceTask(1..N) -> bounded Tokio mpsc -> global rate limiter -> Kafka FuturePro
 
 每个设备任务持续执行以下状态机：
 
-1. 生成新的 `start_id`，将周期内 `sequence` 重置为 1。
+1. 采集启动时刻的 Unix 毫秒值作为新的 `start_id`，将周期内 `sequence` 重置为 1；同一设备发生同毫秒启动或时钟回拨时，将该值提升到上一周期加 1。
 2. 生成并入队 `start`。
 3. 生成并入队 `devinfo`。
 4. 随机决定 `environment` 与 `app` 的入队顺序并依次生成。
@@ -286,7 +286,7 @@ channel_capacity = 10000
 ## 11. Kafka 发送与故障处理
 
 - 每条 JSON 作为独立 Kafka record value，record key 为 `udid`。
-- 当前生成器将单个 `app` 事件 JSON value 控制在 900,000 字节预算内；4,000 项安装列表的构造序列化上界为 890,018 字节。producer 客户端 `message.max.bytes` 固定为 1,000,000；这不改变 broker/topic 的消息上限，部署环境如更严格须调低安装项数。
+- 当前生成器将单个 `app` 事件 JSON value 控制在 900,000 字节预算内；4,000 项安装列表的构造序列化上界为 890,000 字节。producer 客户端 `message.max.bytes` 固定为 1,000,000；这不改变 broker/topic 的消息上限，部署环境如更严格须调低安装项数。
 - 使用异步 Kafka producer；依赖 producer 的队列和重试机制处理暂时性错误。
 - 中央发送器在每次提交前获取全局速率许可。
 - 中央发送器在等待下一条 channel 事件期间同时回收已完成的 delivery ack，及时记录低流量场景下的交付失败。
@@ -299,7 +299,7 @@ channel_capacity = 10000
 采用测试驱动开发，先验证失败再写最小实现。
 
 - **数据契约测试：** 分别序列化四类消息，断言公共字段、`protol_type`、payload 全部字段名与 JSON 类型，保护 Flink 数据契约。
-- **设备身份测试：** 同一设备跨多个周期保持 `udid`；不同周期产生不同 `start_id`。
+- **设备身份测试：** 同一设备跨多个周期保持 `udid`；不同周期产生严格递增的毫秒 `start_id`，并验证 `event_timestamp` 从独立的消息生成时间取得。
 - **顺序测试：** 每周期第一条为 `start`、第二条为 `devinfo`，周期内 `start_id` 一致且 `sequence` 严格递增。
 - **合理性测试：** 电量范围、可用资源不超过总量、App 数量范围、安装/更新时间关系、Android/iOS 档案组合正确。
 - **配置测试：** 覆盖零设备、零速率、空 broker/topic、反向区间等非法配置。

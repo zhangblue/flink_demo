@@ -1,5 +1,7 @@
 # 手机 App 模拟数据发送器实现计划
 
+> **数据契约迁移说明：** 本计划记录初始 UUID `start_id` 实现。当前契约已由 `docs/superpowers/specs/2026-10-11-millisecond-start-id-design.md` 和 `docs/superpowers/plans/2026-10-11-millisecond-start-id.md` 更新为 Unix 毫秒整数；涉及 `start_id` 的旧代码片段仅作历史记录。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
 **目标：** 在 `sender/` 中实现一个基于 Tokio 的多设备手机 App 数据模拟器，按全局可配置速率将满足固定 JSON 契约和启动顺序的消息写入 Kafka。

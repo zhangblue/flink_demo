@@ -5,7 +5,7 @@ pub struct MobileEvent {
     pub event_id: uuid::Uuid,
     pub protol_type: ProtocolType,
     pub udid: uuid::Uuid,
-    pub start_id: uuid::Uuid,
+    pub start_id: i64,
     pub event_timestamp: i64,
     pub sequence: u32,
     pub payload: EventPayload,
@@ -110,7 +110,7 @@ mod tests {
             event_id: uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
             protol_type,
             udid: uuid::Uuid::parse_str("ad3eb36b-2145-4e70-a8cd-adc193ca865f").unwrap(),
-            start_id: uuid::Uuid::parse_str("6ab49af4-bf41-4988-8651-6c34b477a514").unwrap(),
+            start_id: 1_791_614_142_000,
             event_timestamp: 1_791_614_142_381,
             sequence,
             payload,
@@ -141,8 +141,8 @@ mod tests {
         assert_eq!(value["event_id"], "550e8400-e29b-41d4-a716-446655440000");
         assert!(value["udid"].is_string());
         assert_eq!(value["udid"], "ad3eb36b-2145-4e70-a8cd-adc193ca865f");
-        assert!(value["start_id"].is_string());
-        assert_eq!(value["start_id"], "6ab49af4-bf41-4988-8651-6c34b477a514");
+        assert!(value["start_id"].is_i64());
+        assert_eq!(value["start_id"], 1_791_614_142_000_i64);
         assert_eq!(value["protol_type"], kind);
         assert_eq!(value["event_timestamp"], 1_791_614_142_381_i64);
         assert!(value.get("event_time").is_none());
