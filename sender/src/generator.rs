@@ -208,8 +208,12 @@ impl<R: Rng> SimulatedDevice<R> {
         let battery_level = self.rng.random_range(0..=100);
         let network_type = ["wifi", "4g", "5g"][self.rng.random_range(0..3)].to_owned();
         let profile = self.profile;
+        let selected_package = self.installed_apps
+            [self.rng.random_range(0..self.installed_apps.len())]
+        .package_name
+        .clone();
         let start = EventPayload::Start(StartPayload {
-            app_package: "com.example.demo".into(),
+            app_package: selected_package.clone(),
             app_version: "3.8.1".into(),
             app_build: 30_801,
             launch_type: "cold".into(),
@@ -264,7 +268,11 @@ impl<R: Rng> SimulatedDevice<R> {
             self.apps_initialized = true;
         }
         let apps = self.installed_apps.clone();
-        let app = EventPayload::App(AppPayload { collected_at, apps });
+        let app = EventPayload::App(AppPayload {
+            self_package_name: selected_package,
+            collected_at,
+            apps,
+        });
         let mut later = [
             (ProtocolType::Environment, environment),
             (ProtocolType::App, app),
@@ -705,6 +713,33 @@ mod tests {
             .unwrap();
         assert_eq!(start.battery_level, environment.battery_level);
         assert_eq!(start.network_type, environment.network_type);
+    }
+
+    #[test]
+    fn selected_package_belongs_to_apps_and_matches_start() {
+        for seed in 0..64 {
+            let mut device = SimulatedDevice::new(StdRng::seed_from_u64(seed), 7..=7);
+            for cycle_index in 0..4 {
+                let cycle = device.next_cycle(1_000 + cycle_index, 2_000 + cycle_index);
+                let EventPayload::Start(start) = &cycle[0].payload else {
+                    panic!("start payload")
+                };
+                let app = cycle
+                    .iter()
+                    .find_map(|event| match &event.payload {
+                        EventPayload::App(value) => Some(value),
+                        _ => None,
+                    })
+                    .expect("app payload");
+
+                assert_eq!(start.app_package, app.self_package_name);
+                assert!(
+                    app.apps
+                        .iter()
+                        .any(|installed| installed.package_name == app.self_package_name)
+                );
+            }
+        }
     }
 
     #[test]

@@ -81,6 +81,7 @@ pub struct EnvironmentPayload {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct AppPayload {
+    pub self_package_name: String,
     pub collected_at: i64,
     pub apps: Vec<InstalledApp>,
 }
@@ -236,6 +237,7 @@ mod tests {
             ProtocolType::App,
             4,
             EventPayload::App(AppPayload {
+                self_package_name: "com.tencent.mm".into(),
                 collected_at: 1_791_614_142_417,
                 apps: vec![InstalledApp {
                     package_name: "com.tencent.mm".into(),
@@ -252,7 +254,19 @@ mod tests {
         assert_envelope(&value, "app", 4);
         assert_eq!(
             value["payload"],
-            json!({"collected_at":1791614142417_i64,"apps":[{"package_name":"com.tencent.mm","app_name":"WeChat","version_name":"8.0.62","version_code":2800,"is_system_app":false,"first_installed_at":1735689600000_i64,"last_updated_at":1789000000000_i64}]})
+            json!({
+                "self_package_name": "com.tencent.mm",
+                "collected_at": 1791614142417_i64,
+                "apps": [{
+                    "package_name": "com.tencent.mm",
+                    "app_name": "WeChat",
+                    "version_name": "8.0.62",
+                    "version_code": 2800,
+                    "is_system_app": false,
+                    "first_installed_at": 1735689600000_i64,
+                    "last_updated_at": 1789000000000_i64
+                }]
+            })
         );
     }
 
