@@ -7,6 +7,8 @@
 - 同一设备在进程生命周期内保持固定的 `udid`。
 - 每次 App 启动使用启动时刻的 Unix 毫秒值作为 `start_id`，该周期内的所有事件共享此 ID。
 - 每个启动周期严格先发送 `start`，再发送 `devinfo`，随后随机发送 `environment` 与 `app`。
+- 每次启动从设备安装列表随机选择当前 App；`start.payload.app_package` 与
+  `app.payload.self_package_name` 在同一启动周期内保持一致。
 - 多设备通过 Tokio 并发运行，所有设备共享一个可配置的全局发送速率。
 - Kafka record key 使用 `udid`，确保同一设备的事件进入同一分区并保持顺序。
 - JSON 只使用 Unix 毫秒时间戳字段 `event_timestamp`，不包含 `event_time`。

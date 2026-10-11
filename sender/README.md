@@ -82,7 +82,7 @@ channel_capacity = 10000
   "event_timestamp": 1791614142381,
   "sequence": 1,
   "payload": {
-    "app_package": "com.example.demo",
+    "app_package": "com.tencent.mm",
     "app_version": "3.8.1",
     "app_build": 30801,
     "launch_type": "cold",
@@ -95,7 +95,7 @@ channel_capacity = 10000
 
 | payload 字段 | JSON 类型 | 语义 |
 | --- | --- | --- |
-| `app_package` | string | Android package name 或 iOS bundle ID |
+| `app_package` | string | Android package name 或 iOS bundle ID；来自本次启动的 `app.payload.apps`，与 `app.payload.self_package_name` 相同 |
 | `app_version` | string | 可读版本号，如 `3.8.1` |
 | `app_build` | integer | 正整数构建号 |
 | `launch_type` | string | `cold` 或 `warm` |
@@ -211,6 +211,7 @@ channel_capacity = 10000
   "sequence": 4,
   "payload": {
     "collected_at": 1791614142384,
+    "self_package_name": "com.tencent.mm",
     "apps": [
       {
         "package_name": "com.tencent.mm",
@@ -229,6 +230,7 @@ channel_capacity = 10000
 | payload 字段 | JSON 类型 | 语义 |
 | --- | --- | --- |
 | `collected_at` | integer | 安装列表采集时刻的 Unix 毫秒时间戳 |
+| `self_package_name` | string | 本次启动的 App 包名；每个启动周期从设备安装列表重新随机选择，与 `start.payload.app_package` 相同 |
 | `apps` | array | 完整安装列表，长度在 `installed_apps_min`～`installed_apps_max` 内 |
 
 每个 `apps` 元素：
@@ -246,6 +248,8 @@ channel_capacity = 10000
 ## Flink 消费建议
 
 按 `protol_type` 将四种 payload 分流反序列化。将 `event_timestamp` 解释为 Unix epoch **milliseconds**，再作为事件时间及 watermark 的输入；不要按秒解析，也不要依赖不存在的 `event_time` 字段。Kafka 分区顺序只保证同一 `udid` 的 record 顺序，不代表不同设备之间有全局顺序。
+
+将 `app.payload.self_package_name` 定义为必填 `STRING`，并可用 `app.payload.apps` 安装列表校验其包名存在性；同一启动周期内该字段应与 `start.payload.app_package` 相同。
 
 ## 测试
 

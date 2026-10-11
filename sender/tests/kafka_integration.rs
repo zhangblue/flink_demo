@@ -149,6 +149,23 @@ async fn sends_and_consumes_one_ordered_startup_cycle() {
         let later = [&received[2].2["protol_type"], &received[3].2["protol_type"]];
         assert!(later.contains(&&Value::String("environment".to_owned())));
         assert!(later.contains(&&Value::String("app".to_owned())));
+        let start = &received[0].2["payload"];
+        let app = received
+            .iter()
+            .find_map(|(_, _, value)| (value["protol_type"] == "app").then_some(&value["payload"]))
+            .expect("app payload");
+        let selected = app["self_package_name"]
+            .as_str()
+            .expect("self_package_name string");
+
+        assert_eq!(start["app_package"], selected);
+        assert!(
+            app["apps"]
+                .as_array()
+                .expect("apps array")
+                .iter()
+                .any(|installed| installed["package_name"] == selected)
+        );
         assert!(
             received
                 .iter()
