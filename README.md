@@ -1,6 +1,6 @@
 # Flink Demo：手机事件模拟发送器
 
-这是一个使用 Rust 和 Tokio 实现的手机 App 事件模拟器，可持续生成多台 Android/iOS 设备的启动与运行数据，并按全局速率限制写入 Kafka，供 Flink 等实时计算程序消费。
+本仓库包含 Rust/Tokio 手机 App 事件模拟发送器和 Java/Flink 事件补全作业。发送器持续生成多台 Android/iOS 设备的启动与运行数据并写入 Kafka；Flink 作业在 2 分钟处理时间滚动窗口内补全 App 名称和版本，将成功与错误事件分别写入 Kafka。
 
 ## 核心能力
 
@@ -21,6 +21,10 @@
 ├── README.md
 ├── docs/
 │   └── superpowers/        # 设计方案与实现计划
+├── flink_processer/
+│   ├── pom.xml             # Java 17 / Flink 2.2 Maven 工程
+│   ├── README.md           # 构建、运行参数与补全规则
+│   └── src/                # Kafka 作业实现与测试
 └── sender/
     ├── Cargo.toml
     ├── config.toml         # 运行配置
@@ -77,6 +81,17 @@ RUST_LOG=debug cargo run --manifest-path sender/Cargo.toml -- --config sender/co
 
 按 `Ctrl+C` 后，程序停止创建新的启动周期，排空已进入发送流程的消息并退出。
 
+### 构建 Flink 补全作业
+
+安装 Java 17、Maven 和 Flink 2.2.0 后，从项目根目录执行：
+
+```bash
+mvn -f flink_processer/pom.xml clean package
+flink run --detached flink_processer/target/flink-processer-1.0.0.jar
+```
+
+提交前需启动 Flink 集群并确保其可访问 Kafka。作业默认消费 `flink_demo`，将成功事件写入 `flink_output`，补全失败的非 `app` 事件写入 `flink_error`。全部参数、输入字段和窗口限制见 [Flink 补全作业使用说明](flink_processer/README.md)。
+
 ## 事件数据
 
 每条 Kafka value 是一个 JSON 对象，公共字段如下：
@@ -110,6 +125,7 @@ cargo fmt --manifest-path sender/Cargo.toml --check
 cargo clippy --manifest-path sender/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path sender/Cargo.toml --all-features
 cargo build --manifest-path sender/Cargo.toml --release
+mvn -f flink_processer/pom.xml clean verify
 ```
 
 真实 Kafka 集成测试默认被忽略，可显式执行：
@@ -125,5 +141,7 @@ cargo test --manifest-path sender/Cargo.toml --test kafka_integration -- --ignor
 ## 详细文档
 
 - [发送器配置与完整数据契约](sender/README.md)
+- [Flink 补全作业使用说明](flink_processer/README.md)
+- [Flink 事件补全设计](docs/superpowers/specs/2026-10-12-flink-kafka-event-enrichment-design.md)
 - [系统设计方案](docs/superpowers/specs/2026-10-10-mobile-event-sender-design.md)
 - [实现计划](docs/superpowers/plans/2026-10-10-mobile-event-sender.md)
