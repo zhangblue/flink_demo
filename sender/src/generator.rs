@@ -1,6 +1,6 @@
 use crate::model::{
-    AppPayload, DevinfoPayload, EnvironmentPayload, EventPayload, InstalledApp, MobileEvent,
-    ProtocolType, StartPayload,
+    AppPayload, CommonPayload, DevinfoPayload, EnvironmentPayload, EventPayload, InstalledApp,
+    MobileEvent, ProtocolType, StartPayload,
 };
 use rand::Rng;
 use std::ops::RangeInclusive;
@@ -212,10 +212,20 @@ impl<R: Rng> SimulatedDevice<R> {
         let battery_level = self.rng.random_range(0..=100);
         let network_type = ["wifi", "4g", "5g"][self.rng.random_range(0..3)].to_owned();
         let profile = self.profile;
+        let common_app =
+            self.installed_apps[self.rng.random_range(0..self.installed_apps.len())].clone();
         let selected_package = self.installed_apps
             [self.rng.random_range(0..self.installed_apps.len())]
         .package_name
         .clone();
+        let common = EventPayload::Common(CommonPayload {
+            self_app_package: common_app.package_name,
+            self_app_name: common_app.app_name,
+            model: profile.model.into(),
+            brand: profile.brand.into(),
+            os: profile.os.into(),
+            os_version: profile.os_version.into(),
+        });
         let start = EventPayload::Start(StartPayload {
             app_package: selected_package.clone(),
             app_version: "3.8.1".into(),
@@ -286,6 +296,7 @@ impl<R: Rng> SimulatedDevice<R> {
         }
         let [third, fourth] = later;
         let payloads = [
+            (ProtocolType::Common, common),
             (ProtocolType::Start, start),
             (ProtocolType::Devinfo, devinfo),
             third,
@@ -422,30 +433,32 @@ mod tests {
     }
 
     #[test]
-    fn one_cycle_starts_with_start_then_devinfo() {
+    fn one_cycle_starts_with_common_start_then_devinfo() {
         let mut device = fixture_device(7);
         let cycle = device.next_cycle(1_791_614_142_000, 1_791_614_142_381);
-        assert_eq!(cycle.len(), 4);
-        assert_eq!(cycle[0].protol_type, ProtocolType::Start);
-        assert_eq!(cycle[1].protol_type, ProtocolType::Devinfo);
+        assert_eq!(cycle.len(), 5);
+        assert_eq!(cycle[0].protol_type, ProtocolType::Common);
+        assert_eq!(cycle[1].protol_type, ProtocolType::Start);
+        assert_eq!(cycle[2].protol_type, ProtocolType::Devinfo);
         assert_eq!(
             cycle.iter().map(|e| e.sequence).collect::<Vec<_>>(),
-            vec![1, 2, 3, 4]
+            vec![1, 2, 3, 4, 5]
         );
         assert!(
-            cycle[2..]
+            cycle[3..]
                 .iter()
                 .any(|e| e.protol_type == ProtocolType::Environment)
         );
         assert!(
-            cycle[2..]
+            cycle[3..]
                 .iter()
                 .any(|e| e.protol_type == ProtocolType::App)
         );
         for event in &cycle {
             assert!(matches!(
                 (&event.protol_type, &event.payload),
-                (ProtocolType::Start, EventPayload::Start(_))
+                (ProtocolType::Common, EventPayload::Common(_))
+                    | (ProtocolType::Start, EventPayload::Start(_))
                     | (ProtocolType::Devinfo, EventPayload::Devinfo(_))
                     | (ProtocolType::Environment, EventPayload::Environment(_))
                     | (ProtocolType::App, EventPayload::App(_))
@@ -456,10 +469,52 @@ mod tests {
     #[test]
     fn both_later_event_orders_occur_with_fixed_seeds() {
         let orders = (0..64)
-            .map(|seed| fixture_device(seed).next_cycle(1000, 2000)[2].protol_type)
+            .map(|seed| fixture_device(seed).next_cycle(1000, 2000)[3].protol_type)
             .collect::<Vec<_>>();
         assert!(orders.contains(&ProtocolType::Environment));
         assert!(orders.contains(&ProtocolType::App));
+    }
+
+    #[test]
+    fn common_app_and_device_fields_match_cycle_state() {
+        let cycle = fixture_device(7).next_cycle(1000, 2000);
+        let EventPayload::Common(common) = &cycle[0].payload else {
+            panic!("common payload")
+        };
+        let EventPayload::Devinfo(devinfo) = &cycle[2].payload else {
+            panic!("devinfo payload")
+        };
+        let app = cycle
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::App(value) => Some(value),
+                _ => None,
+            })
+            .expect("app payload");
+        assert!(app.apps.iter().any(|installed| {
+            installed.package_name == common.self_app_package
+                && installed.app_name == common.self_app_name
+        }));
+        assert_eq!(common.model, devinfo.model);
+        assert_eq!(common.brand, devinfo.brand);
+        assert_eq!(common.os, devinfo.os);
+        assert_eq!(common.os_version, devinfo.os_version);
+    }
+
+    #[test]
+    fn common_app_is_selected_independently_of_start_app() {
+        let mut device = SimulatedDevice::new(StdRng::seed_from_u64(7), 7..=7);
+        let differs = (0..64).any(|cycle_index| {
+            let cycle = device.next_cycle(1_000 + cycle_index, 2_000 + cycle_index);
+            let EventPayload::Common(common) = &cycle[0].payload else {
+                panic!("common payload")
+            };
+            let EventPayload::Start(start) = &cycle[1].payload else {
+                panic!("start payload")
+            };
+            common.self_app_package != start.app_package
+        });
+        assert!(differs, "common and start must be independently selected");
     }
 
     #[test]
@@ -512,7 +567,7 @@ mod tests {
                 .map(|e| e.event_id)
                 .collect::<HashSet<_>>()
                 .len(),
-            40
+            50
         );
         assert_eq!(
             events
@@ -570,7 +625,7 @@ mod tests {
         for seed in 0..64 {
             let mut device = SimulatedDevice::new(StdRng::seed_from_u64(seed), 7..=7);
             let cycle = device.next_cycle(1000, 2000);
-            let EventPayload::Devinfo(info) = &cycle[1].payload else {
+            let EventPayload::Devinfo(info) = &cycle[2].payload else {
                 panic!("devinfo")
             };
             let apps = cycle
@@ -719,7 +774,7 @@ mod tests {
                 .map(|e| e.event_id)
                 .collect::<HashSet<_>>()
                 .len(),
-            8
+            10
         );
     }
 
@@ -745,7 +800,7 @@ mod tests {
                 .iter()
                 .all(|event| event.event_timestamp == 1_791_614_142_381)
         );
-        let EventPayload::Start(start) = &cycle[0].payload else {
+        let EventPayload::Start(start) = &cycle[1].payload else {
             panic!("start payload")
         };
         let environment = cycle
@@ -765,7 +820,7 @@ mod tests {
             let mut device = SimulatedDevice::new(StdRng::seed_from_u64(seed), 7..=7);
             for cycle_index in 0..4 {
                 let cycle = device.next_cycle(1_000 + cycle_index, 2_000 + cycle_index);
-                let EventPayload::Start(start) = &cycle[0].payload else {
+                let EventPayload::Start(start) = &cycle[1].payload else {
                     panic!("start payload")
                 };
                 let app = cycle
@@ -790,7 +845,7 @@ mod tests {
     fn resource_values_and_app_times_are_bounded() {
         let mut device = SimulatedDevice::new(StdRng::seed_from_u64(13), 12..=12);
         let cycle = device.next_cycle(1_791_614_142_000, 1_791_614_142_381);
-        let EventPayload::Devinfo(devinfo) = &cycle[1].payload else {
+        let EventPayload::Devinfo(devinfo) = &cycle[2].payload else {
             panic!("devinfo payload")
         };
         let environment = cycle
@@ -857,7 +912,7 @@ mod tests {
         for seed in 0..64 {
             let mut device = fixture_device(seed);
             let cycle = device.next_cycle(1_791_614_142_000, 1_791_614_142_381);
-            let EventPayload::Devinfo(info) = &cycle[1].payload else {
+            let EventPayload::Devinfo(info) = &cycle[2].payload else {
                 panic!("devinfo payload")
             };
             let app = cycle

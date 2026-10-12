@@ -304,10 +304,10 @@ mod tests {
         ));
 
         let first = receiver.recv().await.unwrap();
-        assert_eq!(first.protol_type, ProtocolType::Start);
+        assert_eq!(first.protol_type, ProtocolType::Common);
         shutdown_tx.send(true).unwrap();
         let mut events = vec![first];
-        events.extend(collect_n(&mut receiver, 3).await);
+        events.extend(collect_n(&mut receiver, 4).await);
         tokio::time::timeout(Duration::from_secs(1), task)
             .await
             .unwrap()
@@ -317,15 +317,19 @@ mod tests {
             events
                 .iter()
                 .map(|event| event.protol_type)
-                .collect::<Vec<_>>()[..2],
-            [ProtocolType::Start, ProtocolType::Devinfo]
+                .collect::<Vec<_>>()[..3],
+            [
+                ProtocolType::Common,
+                ProtocolType::Start,
+                ProtocolType::Devinfo
+            ]
         );
         assert_eq!(
             events
                 .iter()
                 .map(|event| event.sequence)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4]
+            [1, 2, 3, 4, 5]
         );
         assert!(receiver.recv().await.is_none());
     }
@@ -340,7 +344,7 @@ mod tests {
             shutdown_rx,
             3600..=3600,
         ));
-        collect_n(&mut receiver, 4).await;
+        collect_n(&mut receiver, 5).await;
 
         shutdown_tx.send(true).unwrap();
         tokio::time::timeout(Duration::from_secs(1), task)
@@ -379,7 +383,7 @@ mod tests {
             shutdown_rx,
             3600..=3600,
         ));
-        let events = collect_n(&mut receiver, 8).await;
+        let events = collect_n(&mut receiver, 10).await;
         shutdown_tx.send(true).unwrap();
         first.await.unwrap();
         second.await.unwrap();
@@ -387,7 +391,7 @@ mod tests {
         let udids: HashSet<_> = events.iter().map(|event| event.udid).collect();
         assert_eq!(udids.len(), 2);
         let ids: HashSet<_> = events.iter().map(|event| event.event_id).collect();
-        assert_eq!(ids.len(), 8);
+        assert_eq!(ids.len(), 10);
     }
 
     #[derive(Clone)]
@@ -433,7 +437,7 @@ mod tests {
         config.simulation.messages_per_second = 1_000;
         config.simulation.startup_interval_min_secs = 3600;
         config.simulation.startup_interval_max_secs = 3600;
-        config.simulation.channel_capacity = 8;
+        config.simulation.channel_capacity = 10;
         config.simulation.installed_apps_min = 1;
         config.simulation.installed_apps_max = 1;
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -452,12 +456,12 @@ mod tests {
         }));
 
         for _ in 0..100 {
-            if events.lock().unwrap().len() == 8 {
+            if events.lock().unwrap().len() == 10 {
                 break;
             }
             tokio::time::advance(Duration::from_millis(1)).await;
         }
-        assert_eq!(events.lock().unwrap().len(), 8);
+        assert_eq!(events.lock().unwrap().len(), 10);
         shutdown_tx.send(()).unwrap();
         tokio::task::yield_now().await;
         assert!(
@@ -471,10 +475,10 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(report.enqueued, 8);
-        assert_eq!(report.delivered, 8);
+        assert_eq!(report.enqueued, 10);
+        assert_eq!(report.delivered, 10);
         assert_eq!(report.failed, 0);
-        assert_eq!(acked.load(Ordering::SeqCst), 8);
+        assert_eq!(acked.load(Ordering::SeqCst), 10);
         assert_eq!(flushes.load(Ordering::SeqCst), 1);
         let collected = events.lock().unwrap();
         let udids: HashSet<_> = collected.iter().map(|event| event.udid).collect();

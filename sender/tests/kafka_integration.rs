@@ -97,7 +97,7 @@ async fn sends_and_consumes_one_ordered_startup_cycle() {
             .iter()
             .map(|event| event.event_id.to_string())
             .collect();
-        assert_eq!(event_ids.len(), 4);
+        assert_eq!(event_ids.len(), 5);
 
         let sink = KafkaSink::new(&KafkaConfig {
             brokers,
@@ -114,7 +114,7 @@ async fn sends_and_consumes_one_ordered_startup_cycle() {
         }
 
         let mut received = Vec::new();
-        while received.len() < 4 {
+        while received.len() < 5 {
             let message = consumer.recv().await.expect("consume Kafka record");
             let Some(payload) = message.payload() else {
                 continue;
@@ -142,14 +142,15 @@ async fn sends_and_consumes_one_ordered_startup_cycle() {
                 .iter()
                 .map(|(_, _, value)| value["sequence"].as_u64().unwrap())
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4]
+            [1, 2, 3, 4, 5]
         );
-        assert_eq!(received[0].2["protol_type"], "start");
-        assert_eq!(received[1].2["protol_type"], "devinfo");
-        let later = [&received[2].2["protol_type"], &received[3].2["protol_type"]];
+        assert_eq!(received[0].2["protol_type"], "common");
+        assert_eq!(received[1].2["protol_type"], "start");
+        assert_eq!(received[2].2["protol_type"], "devinfo");
+        let later = [&received[3].2["protol_type"], &received[4].2["protol_type"]];
         assert!(later.contains(&&Value::String("environment".to_owned())));
         assert!(later.contains(&&Value::String("app".to_owned())));
-        let start = &received[0].2["payload"];
+        let start = &received[1].2["payload"];
         let app = received
             .iter()
             .find_map(|(_, _, value)| (value["protol_type"] == "app").then_some(&value["payload"]))
