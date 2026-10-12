@@ -64,7 +64,7 @@ flink run --detached \
 | --- | --- | --- |
 | `udid` | 非空白 string | 设备标识，与 `start_id` 一起分组 |
 | `start_id` | 64 位 integer | 启动周期的 Unix epoch 毫秒值 |
-| `protol_type` | 非空白 string | 事件类型，沿用既定拼写；`app` 是元数据事件，其余类型均按非 `app` 处理 |
+| `protol_type` | 非空白 string | 事件类型，沿用既定拼写；`common` 是合法的非 `app` 类型，`app` 是元数据事件，其余类型均按非 `app` 处理 |
 | `sequence` | integer | 启动周期内序号，用于选择 App 事件和输出排序 |
 | `event_timestamp` | integer | Unix epoch 毫秒值，用作序号相同时的排序条件，不用于窗口分配 |
 | `event_id` | string | 事件标识，用作最后的输出排序条件和下游幂等标识 |
@@ -76,6 +76,8 @@ flink run --detached \
 | `payload.apps[].version_name` | string | 映射为顶层 `app_version` |
 
 JSON 无法解析、不是对象，或缺少有效的 `udid`、`start_id`、`protol_type` 时，作业抛出异常，由 Flink 的失败恢复策略处理。这类解析错误不写入 `flink_error`，也不会静默丢弃。发送器提供全部排序字段；若 `sequence` 或 `event_timestamp` 无法转换为整数，解析默认值为 `Long.MAX_VALUE`，若 `event_id` 缺失则默认为空字符串。
+
+`common` 的完整 `payload` 字段见 [sender 文档](../sender/README.md)。现有解析器无需增加类型枚举分支即可保留 `common.payload` 原值，并按当前规则将其作为非 `app` 事件参与 App 信息补全与成功/错误路由。
 
 ## 补全与路由规则
 

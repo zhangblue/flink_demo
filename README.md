@@ -6,7 +6,7 @@
 
 - 同一设备在进程生命周期内保持固定的 `udid`。
 - 每次 App 启动使用启动时刻的 Unix 毫秒值作为 `start_id`，该周期内的所有事件共享此 ID。
-- 每个启动周期严格先发送 `start`，再发送 `devinfo`，随后随机发送 `environment` 与 `app`。
+- 每个启动周期严格按 `common → start → devinfo → environment/app（随机顺序）` 发送五条事件。
 - 每次启动从设备安装列表随机选择当前 App；`start.payload.app_package` 与
   `app.payload.self_package_name` 在同一启动周期内保持一致。
 - 多设备通过 Tokio 并发运行，所有设备共享一个可配置的全局发送速率。
@@ -99,21 +99,21 @@ flink run --detached flink_processer/target/flink-processer-1.0.0.jar
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `event_id` | string | 单条事件的 UUID v4 |
-| `protol_type` | string | `start`、`devinfo`、`environment` 或 `app` |
+| `protol_type` | string | `common`、`start`、`devinfo`、`environment` 或 `app` |
 | `udid` | string | 设备 UUID v4，同一设备固定 |
 | `start_id` | integer | 启动周期开始时的 Unix epoch 毫秒值，同一周期固定；Flink 使用 `BIGINT` |
 | `event_timestamp` | integer | 单条消息生成时的 Unix epoch 毫秒值，与 `start_id` 独立 |
 | `sequence` | integer | 启动周期内从 1 开始递增的序号 |
 | `payload` | object | 对应事件类型的数据对象 |
 
-字段名 `protol_type` 是既定数据契约的拼写。四种 `payload` 的字段定义、取值范围、完整 JSON 示例和 Flink 消费约定见 [`sender/README.md`](sender/README.md)。
+字段名 `protol_type` 是既定数据契约的拼写。五种 `payload` 的字段定义、取值范围、完整 JSON 示例和 Flink 消费约定见 [`sender/README.md`](sender/README.md)。
 
 ## 事件顺序
 
-一次启动周期固定包含 4 条消息：
+一次启动周期固定包含 5 条消息：
 
 ```text
-start → devinfo → environment/app（随机顺序）
+common → start → devinfo → environment/app（随机顺序）
 ```
 
 不同设备的消息可以交错，也可能具有相同的毫秒 `start_id`。下游应按 `udid` 与 `start_id` 组合分组，并依据 `sequence` 还原周期内顺序。多个事件可能在同一毫秒生成，因此不要使用 `event_timestamp` 代替 `sequence` 排序。
@@ -136,7 +136,7 @@ KAFKA_TOPIC=flink_demo \
 cargo test --manifest-path sender/Cargo.toml --test kafka_integration -- --ignored --nocapture
 ```
 
-该命令会向指定 topic 写入并消费一个包含 4 条事件的完整启动周期。
+该命令会向指定 topic 写入并消费一个包含 5 条事件的完整启动周期。
 
 ## 详细文档
 

@@ -1,6 +1,6 @@
 # 手机事件模拟发送器
 
-持续模拟多台 Android/iOS 手机的 App 启动，将每次启动的四条 JSON 事件写入 Kafka。每条 Kafka record 的 key 是设备 `udid`，value 是完整 JSON 对象。程序只负责生成与发送，不包含 Flink 消费逻辑。
+持续模拟多台 Android/iOS 手机的 App 启动，将每次启动的五条 JSON 事件写入 Kafka。每条 Kafka record 的 key 是设备 `udid`，value 是完整 JSON 对象。程序只负责生成与发送，不包含 Flink 消费逻辑。
 
 ## 构建与运行
 
@@ -60,14 +60,48 @@ channel_capacity = 10000
 | 字段 | JSON 类型 | 语义 |
 | --- | --- | --- |
 | `event_id` | string | 每条事件唯一的 UUID v4 |
-| `protol_type` | string | `start`、`devinfo`、`environment` 或 `app` |
+| `protol_type` | string | `common`、`start`、`devinfo`、`environment` 或 `app` |
 | `udid` | string | 设备 UUID v4；同一设备在进程生命周期内保持稳定 |
-| `start_id` | integer | 本次启动开始时的 Unix 毫秒值；每个启动周期更新，该周期四条消息相同；Flink 使用 `BIGINT` |
+| `start_id` | integer | 本次启动开始时的 Unix 毫秒值；每个启动周期更新，该周期五条消息相同；Flink 使用 `BIGINT` |
 | `event_timestamp` | integer | 单条消息生成时刻的 Unix 毫秒时间戳，与 `start_id` 独立 |
 | `sequence` | integer | 当前启动周期内从 1 开始递增的无符号序号 |
 | `payload` | object | 由 `protol_type` 决定的类型专属数据 |
 
-每次启动依次发送 `start`（sequence 1）、`devinfo`（sequence 2），随后以随机顺序发送 `environment` 与 `app`（sequence 3、4）；默认每类各一条。一个周期中的 `udid` 和 `start_id` 相同，每条 `event_id` 唯一。Kafka key 使用 `udid`，使同一设备进入同一分区并保持发送顺序。不同设备可能具有相同的毫秒 `start_id`，消费端应使用 `(udid, start_id)` 标识启动周期并按 `sequence` 理解周期顺序。`event_timestamp` 在消息生成时独立采集，不从 `start_id` 派生；同一批消息可能具有相同值。下游可忽略未知字段，但不应静默删除或更名本文列出的必填字段；演进时优先新增可选字段。
+每次启动依次发送 `common`（sequence 1）、`start`（sequence 2）、`devinfo`（sequence 3），随后以随机顺序发送 `environment` 与 `app`（sequence 4、5）；默认每类各一条。一个周期中的 `udid` 和 `start_id` 相同，每条 `event_id` 唯一。Kafka key 使用 `udid`，使同一设备进入同一分区并保持发送顺序。不同设备可能具有相同的毫秒 `start_id`，消费端应使用 `(udid, start_id)` 标识启动周期并按 `sequence` 理解周期顺序。`event_timestamp` 在消息生成时独立采集，不从 `start_id` 派生；同一批消息可能具有相同值。下游可忽略未知字段，但不应静默删除或更名本文列出的必填字段；演进时优先新增可选字段。
+
+### `common`
+
+在每次启动周期的第一条消息中携带公共 App 与设备信息：
+
+```json
+{
+  "event_id": "00000000-0000-4000-8000-00000000002a",
+  "protol_type": "common",
+  "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
+  "start_id": 1791614142000,
+  "event_timestamp": 1791614142380,
+  "sequence": 1,
+  "payload": {
+    "self_app_package": "com.eg.android.AlipayGphone",
+    "self_app_name": "支付宝",
+    "model": "23127PN0CC",
+    "brand": "Xiaomi",
+    "os": "Android",
+    "os_version": "15"
+  }
+}
+```
+
+| payload 字段 | JSON 类型 | 语义 |
+| --- | --- | --- |
+| `self_app_package` | string | 本次 `common` 事件独立选中的 App package name 或 bundle ID |
+| `self_app_name` | string | 与 `self_app_package` 对应的可读 App 名称 |
+| `model` | string | 当前设备的厂商型号标识 |
+| `brand` | string | 当前设备品牌 |
+| `os` | string | `Android` 或 `iOS` |
+| `os_version` | string | 当前设备操作系统版本 |
+
+`self_app_package` 与 `self_app_name` 来自设备完整安装列表中的同一条记录。`common` 独立随机选取该记录，不要求 `self_app_package` 等于同一周期的 `start.payload.app_package` 或 `app.payload.self_package_name`；随机选择时也可能恰好相同。四个设备字段来自该设备的固定档案，与同一周期 `devinfo` 中的对应字段一致。
 
 ### `start`
 
@@ -80,7 +114,7 @@ channel_capacity = 10000
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
   "start_id": 1791614142000,
   "event_timestamp": 1791614142381,
-  "sequence": 1,
+  "sequence": 2,
   "payload": {
     "app_package": "com.tencent.mm",
     "app_version": "3.8.1",
@@ -114,7 +148,7 @@ channel_capacity = 10000
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
   "start_id": 1791614142000,
   "event_timestamp": 1791614142382,
-  "sequence": 2,
+  "sequence": 3,
   "payload": {
     "manufacturer": "Xiaomi",
     "brand": "Xiaomi",
@@ -162,7 +196,7 @@ channel_capacity = 10000
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
   "start_id": 1791614142000,
   "event_timestamp": 1791614142383,
-  "sequence": 3,
+  "sequence": 4,
   "payload": {
     "network_type": "wifi",
     "carrier": "China Mobile",
@@ -199,7 +233,7 @@ channel_capacity = 10000
 
 在一条消息中携带设备当前完整安装列表：
 
-以下精简示例假定配置为 `installed_apps_min = 1`、`installed_apps_max = 1`，因此 `apps` 中的一项就是该设备的完整列表；默认配置为 20～80 项。
+以下精简示例假定配置为 `installed_apps_min = 2`、`installed_apps_max = 2`，因此 `apps` 中的两项就是该设备的完整列表；默认配置为 20～80 项。第二项与上面的 `common` 示例对应，第一项与 `start` 的包名对应。
 
 ```json
 {
@@ -208,7 +242,7 @@ channel_capacity = 10000
   "udid": "ad3eb36b-2145-4e70-8000-00000000002a",
   "start_id": 1791614142000,
   "event_timestamp": 1791614142384,
-  "sequence": 4,
+  "sequence": 5,
   "payload": {
     "collected_at": 1791614142384,
     "self_package_name": "com.tencent.mm",
@@ -218,6 +252,15 @@ channel_capacity = 10000
         "app_name": "WeChat",
         "version_name": "3.0.2",
         "version_code": 2800,
+        "is_system_app": false,
+        "first_installed_at": 1782974142384,
+        "last_updated_at": 1791441342384
+      },
+      {
+        "package_name": "com.eg.android.AlipayGphone",
+        "app_name": "支付宝",
+        "version_name": "10.7.0",
+        "version_code": 10700,
         "is_system_app": false,
         "first_installed_at": 1782974142384,
         "last_updated_at": 1791441342384
@@ -247,7 +290,7 @@ channel_capacity = 10000
 
 ## Flink 消费建议
 
-按 `protol_type` 将四种 payload 分流反序列化。将 `event_timestamp` 解释为 Unix epoch **milliseconds**，再作为事件时间及 watermark 的输入；不要按秒解析，也不要依赖不存在的 `event_time` 字段。Kafka 分区顺序只保证同一 `udid` 的 record 顺序，不代表不同设备之间有全局顺序。
+按 `protol_type` 区分五种 payload；需要按类型处理的消费者应增加 `common` 分支。将 `event_timestamp` 解释为 Unix epoch **milliseconds**；需要事件时间及 watermark 的消费者可使用该字段，不要按秒解析，也不要依赖不存在的 `event_time` 字段。Kafka 分区顺序只保证同一 `udid` 的 record 顺序，不代表不同设备之间有全局顺序。
 
 新版 `app` 消息的 `payload.self_package_name` 是必填字符串，消费端应将其加入对应的数据结构（Flink 中可用 `STRING`），并可用 `app.payload.apps` 安装列表校验其包名存在性。旧 Kafka 历史消息没有该字段，重放时消费者需按自身策略兼容缺失值，例如允许为空、补充默认值或分版本处理。
 
@@ -270,4 +313,4 @@ cargo test --manifest-path sender/Cargo.toml \
   --test kafka_integration -- --ignored --nocapture
 ```
 
-`KAFKA_BROKERS` 和 `KAFKA_TOPIC` 可覆盖默认地址与 topic。测试使用独立 consumer group 与唯一设备/事件 ID，写入一个四条消息的启动周期；整体超时为 45 秒。
+`KAFKA_BROKERS` 和 `KAFKA_TOPIC` 可覆盖默认地址与 topic。测试使用独立 consumer group 与唯一设备/事件 ID，写入一个五条消息的启动周期；整体超时为 45 秒。
