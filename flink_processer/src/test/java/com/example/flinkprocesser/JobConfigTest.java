@@ -49,6 +49,20 @@ class JobConfigTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"bootstrap-servers", "input-topic", "output-topic", "error-topic", "group-id"})
+    void rejectsStringOptionWithoutValueAtEnd(String option) {
+        assertThatThrownBy(() -> JobConfig.fromArgs(new String[]{"--" + option}))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"bootstrap-servers", "input-topic", "output-topic", "error-topic", "group-id"})
+    void rejectsStringOptionWithoutValueBeforeAnotherOption(String option) {
+        assertThatThrownBy(() -> JobConfig.fromArgs(new String[]{"--" + option, "--parallelism", "2"}))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest
     @CsvSource({"input-topic,flink_output", "input-topic,flink_error", "output-topic,flink_error"})
     void rejectsEachDuplicateTopicPair(String option, String value) {
         assertThatThrownBy(() -> JobConfig.fromArgs(new String[]{"--" + option, value}))

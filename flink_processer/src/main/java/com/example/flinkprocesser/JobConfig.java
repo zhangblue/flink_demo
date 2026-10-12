@@ -31,13 +31,22 @@ public record JobConfig(
     public static JobConfig fromArgs(String[] args) {
         ParameterTool parameters = ParameterTool.fromArgs(args);
         return new JobConfig(
-                parameters.get("bootstrap-servers", "192.168.250.106:9092"),
-                parameters.get("input-topic", "flink_demo"),
-                parameters.get("output-topic", "flink_output"),
-                parameters.get("error-topic", "flink_error"),
-                parameters.get("group-id", "flink-processer"),
+                stringParameter(parameters, "bootstrap-servers", "192.168.250.106:9092"),
+                stringParameter(parameters, "input-topic", "flink_demo"),
+                stringParameter(parameters, "output-topic", "flink_output"),
+                stringParameter(parameters, "error-topic", "flink_error"),
+                stringParameter(parameters, "group-id", "flink-processer"),
                 parameters.getInt("parallelism", 1),
                 parameters.getLong("checkpoint-interval-ms", 60_000L));
+    }
+
+    private static String stringParameter(ParameterTool parameters, String name, String defaultValue) {
+        String value = parameters.get(name, defaultValue);
+        // ParameterTool stores this marker when an option is present without a value.
+        if ("__NO_VALUE_KEY".equals(value)) {
+            throw new IllegalArgumentException(name + " requires a value");
+        }
+        return value;
     }
 
     private static String requiredString(String value, String name) {
