@@ -504,7 +504,10 @@ mod tests {
     #[test]
     fn common_app_is_selected_independently_of_start_app() {
         let mut device = SimulatedDevice::new(StdRng::seed_from_u64(7), 7..=7);
-        let differs = (0..64).any(|cycle_index| {
+        let mut common_packages = HashSet::new();
+        let mut common_matches_start = false;
+        let mut common_differs_from_start = false;
+        for cycle_index in 0..64 {
             let cycle = device.next_cycle(1_000 + cycle_index, 2_000 + cycle_index);
             let EventPayload::Common(common) = &cycle[0].payload else {
                 panic!("common payload")
@@ -512,9 +515,25 @@ mod tests {
             let EventPayload::Start(start) = &cycle[1].payload else {
                 panic!("start payload")
             };
-            common.self_app_package != start.app_package
-        });
-        assert!(differs, "common and start must be independently selected");
+            common_packages.insert(common.self_app_package.clone());
+            if common.self_app_package == start.app_package {
+                common_matches_start = true;
+            } else {
+                common_differs_from_start = true;
+            }
+        }
+        assert!(
+            common_packages.len() >= 2,
+            "common must select at least two distinct installed packages across the fixed cycles"
+        );
+        assert!(
+            common_matches_start,
+            "common and start must match in at least one fixed cycle"
+        );
+        assert!(
+            common_differs_from_start,
+            "common and start must differ in at least one fixed cycle"
+        );
     }
 
     #[test]
