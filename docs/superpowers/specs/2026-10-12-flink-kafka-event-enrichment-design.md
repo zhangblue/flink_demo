@@ -84,9 +84,10 @@ KafkaSource(flink_demo)
 Source 默认从 consumer group 已提交 offset 开始；不存在已提交 offset 时从最早位置开始。
 两个 Kafka Sink 均使用至少一次投递语义，并启用周期性 checkpoint；下游应继续以
 `event_id` 作为事件幂等标识。每条输入事件只进入一个输出 topic，不同时写入正常和错误
-topic。写入 `flink_output` 和 `flink_error` 的每条 Kafka record 都使用事件顶层 `udid` 的
-UTF-8 字符串作为 record key；不使用组合业务 key，也不沿用或信任输入 record key。这样同一
-设备的正常与错误事件在各自 topic 内仍可按 `udid` 分区。
+topic。写入 `flink_output` 和 `flink_error` 的每条 Kafka record 都使用
+`<udid>:<start_id>` 格式的 UTF-8 字符串作为 record key，其中冒号是固定分隔符；不沿用或
+信任输入 record key。该格式与 Flink 分组所使用的 `(udid, start_id)` 业务 key 一一对应，
+使同一启动周期的正常或错误事件在各自 topic 内进入同一分区。
 
 ## 工程结构
 
@@ -122,7 +123,8 @@ UTF-8 字符串作为 record key；不使用组合业务 key，也不沿用或�
   `flink_error`，并以 `null` 表示无法取得的字段。
 - 成功补全的非 `app` 事件和原始 `app` 事件只写入 `flink_output`。
 - 每条事件只路由到一个 topic。
-- `flink_output` 和 `flink_error` 中每条 record 的 key 都等于输出 JSON 顶层 `udid`。
+- `flink_output` 和 `flink_error` 中每条 record 的 key 都严格等于
+  `<udid>:<start_id>`，两个值来自输出 JSON 顶层字段。
 - 多条 App 事件和输入乱序时结果保持确定。
 - 处理时间跨越滚动窗口边界时，两侧数据不会跨窗口关联，记录已接受的边界行为。
 - 窗口触发后释放窗口状态。
