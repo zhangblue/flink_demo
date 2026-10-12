@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.flink.api.common.functions.MapFunction;
 
+/** 将 Kafka JSON value 解析成窗口计算所需的轻量事件对象。 */
 public class EventRecordParser implements MapFunction<String, EventRecord> {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
@@ -27,6 +28,7 @@ public class EventRecordParser implements MapFunction<String, EventRecord> {
         event.setUdid(udid);
         event.setStartId(startId.longValue());
         event.setProtolType(protolType);
+        // 排序字段缺失时放到窗口末尾；它们不是业务分组的必填字段。
         event.setSequence(root.path("sequence").asLong(Long.MAX_VALUE));
         event.setEventTimestamp(root.path("event_timestamp").asLong(Long.MAX_VALUE));
         event.setEventId(root.path("event_id").asText(""));

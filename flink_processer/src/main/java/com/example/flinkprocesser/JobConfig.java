@@ -2,6 +2,7 @@ package com.example.flinkprocesser;
 
 import org.apache.flink.util.ParameterTool;
 
+/** Flink 作业的命令行配置及集中校验规则。 */
 public record JobConfig(
         String bootstrapServers,
         String inputTopic,
@@ -42,7 +43,7 @@ public record JobConfig(
 
     private static String stringParameter(ParameterTool parameters, String name, String defaultValue) {
         String value = parameters.get(name, defaultValue);
-        // ParameterTool stores this marker when an option is present without a value.
+        // ParameterTool 会用该占位符表示“参数存在但没有值”，必须显式拒绝以免写错 topic。
         if ("__NO_VALUE_KEY".equals(value)) {
             throw new IllegalArgumentException(name + " requires a value");
         }

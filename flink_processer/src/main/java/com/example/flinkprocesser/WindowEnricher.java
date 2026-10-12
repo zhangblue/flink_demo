@@ -11,6 +11,11 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
+/**
+ * 执行单个业务 key、单个滚动窗口内的 App 信息补全。
+ *
+ * <p>该类不持有跨窗口状态，便于独立测试，也明确保留固定滚动窗口的边界语义。</p>
+ */
 public class WindowEnricher {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Comparator<EventRecord> APP_PRIORITY = Comparator
@@ -22,6 +27,7 @@ public class WindowEnricher {
     public EnrichmentBatch enrich(String key, Iterable<EventRecord> events) throws JsonProcessingException {
         List<EventRecord> ordered = new ArrayList<>();
         for (EventRecord event : events) {
+            // 防止错误调用把其他启动周期的数据混入当前窗口结果。
             if (!Objects.equals(key, event.recordKey())) {
                 throw new IllegalArgumentException("Window contains an event with another business key");
             }
@@ -31,6 +37,7 @@ public class WindowEnricher {
 
         Optional<EventRecord> selectedApp = ordered.stream()
                 .filter(WindowEnricher::isApp)
+                // 异常出现多条 app 时选择序号和事件时间最大的记录，保证结果确定。
                 .max(APP_PRIORITY);
         AppMetadata metadata = selectedApp.isPresent()
                 ? extractMetadata(selectedApp.get()) : new AppMetadata(null, null);
@@ -39,6 +46,7 @@ public class WindowEnricher {
         List<OutputEvent> errors = new ArrayList<>();
         for (EventRecord event : ordered) {
             if (isApp(event)) {
+                // app 本身无需补全，保持原 JSON 并进入正常输出。
                 success.add(new OutputEvent(key, event.getJson()));
                 continue;
             }
@@ -49,6 +57,7 @@ public class WindowEnricher {
             if (metadata.name() != null && metadata.version() != null) {
                 success.add(enriched);
             } else {
+                // 任一字段缺失都视为补全失败，但仍输出带 null 字段的完整事件便于排查。
                 errors.add(enriched);
             }
         }

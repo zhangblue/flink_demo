@@ -5,6 +5,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 
 import java.nio.charset.StandardCharsets;
 
+/** 将补全结果序列化为带组合 key 的 Kafka ProducerRecord。 */
 public class OutputEventKafkaSerializer implements KafkaRecordSerializationSchema<OutputEvent> {
     private final String topic;
 
@@ -20,6 +21,7 @@ public class OutputEventKafkaSerializer implements KafkaRecordSerializationSchem
         if (event.key() == null || event.key().isBlank()) {
             throw new IllegalArgumentException("key must not be blank");
         }
+        // key 与 value 都显式使用 UTF-8，确保两个输出 topic 的分区规则一致。
         return new ProducerRecord<>(topic,
                 event.key().getBytes(StandardCharsets.UTF_8),
                 event.json().getBytes(StandardCharsets.UTF_8));

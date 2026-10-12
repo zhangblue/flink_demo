@@ -14,6 +14,12 @@ import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 
 import java.time.Duration;
 
+/**
+ * 手机事件 App 信息补全作业入口。
+ *
+ * <p>作业从 Kafka 读取原始事件，在两分钟处理时间滚动窗口内完成关联，再将正常和异常数据
+ * 分别写入两个 Kafka topic。</p>
+ */
 public final class EventEnrichmentJob {
     private EventEnrichmentJob() { }
 
@@ -26,12 +32,14 @@ public final class EventEnrichmentJob {
 
     public static void buildPipeline(StreamExecutionEnvironment env, JobConfig config) {
         env.setParallelism(config.parallelism());
+        // Source 与两个 Sink 均采用至少一次语义，checkpoint 用于提交消费进度和恢复状态。
         env.enableCheckpointing(config.checkpointIntervalMs(), CheckpointingMode.AT_LEAST_ONCE);
 
         KafkaSource<String> source = KafkaSource.<String>builder()
                 .setBootstrapServers(config.bootstrapServers())
                 .setTopics(config.inputTopic())
                 .setGroupId(config.groupId())
+                // 优先恢复消费组已提交位置；新消费组从最早 offset 开始，避免漏掉历史数据。
                 .setStartingOffsets(OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST))
                 .setValueOnlyDeserializer(new SimpleStringSchema())
                 .build();
@@ -39,6 +47,7 @@ public final class EventEnrichmentJob {
         SingleOutputStreamOperator<OutputEvent> output = env
                 .fromSource(source, WatermarkStrategy.noWatermarks(), "Kafka input").uid("kafka-source")
                 .map(new EventRecordParser()).uid("parse-json")
+                // Flink 内部分组和下游 Kafka record 使用完全相同的组合 key。
                 .keyBy(EventRecord::recordKey)
                 .window(createWindowAssigner())
                 .process(new AppEnrichmentWindowFunction()).uid("app-enrichment-window");
@@ -49,6 +58,7 @@ public final class EventEnrichmentJob {
     }
 
     static TumblingProcessingTimeWindows createWindowAssigner() {
+        // 采用固定、互不重叠的窗口；跨窗口数据按既定契约不再关联补全。
         return TumblingProcessingTimeWindows.of(Duration.ofMinutes(2));
     }
 

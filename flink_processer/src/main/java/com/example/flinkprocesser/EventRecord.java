@@ -1,5 +1,10 @@
 package com.example.flinkprocesser;
 
+/**
+ * Flink 流转使用的轻量事件对象。
+ *
+ * <p>保留原始 JSON 以避免丢失未知字段，只额外解析分组、排序和路由所需的信封字段。</p>
+ */
 public class EventRecord {
     private String json;
     private String udid;
@@ -10,8 +15,10 @@ public class EventRecord {
     private String eventId;
 
     public EventRecord() {
+        // Flink POJO 序列化器需要公开的无参构造器。
     }
 
+    /** 返回窗口分组及输出 Kafka record 共用的启动周期组合 key。 */
     public String recordKey() {
         return udid + ":" + startId;
     }
