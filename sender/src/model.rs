@@ -24,6 +24,7 @@ pub enum ProtocolType {
     Devinfo,
     Environment,
     App,
+    Common,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -33,6 +34,17 @@ pub enum EventPayload {
     Devinfo(DevinfoPayload),
     Environment(EnvironmentPayload),
     App(AppPayload),
+    Common(CommonPayload),
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CommonPayload {
+    pub self_app_package: String,
+    pub self_app_name: String,
+    pub model: String,
+    pub brand: String,
+    pub os: String,
+    pub os_version: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -266,6 +278,36 @@ mod tests {
                     "first_installed_at": 1735689600000_i64,
                     "last_updated_at": 1789000000000_i64
                 }]
+            })
+        );
+    }
+
+    #[test]
+    fn common_event_serializes_with_stable_contract() {
+        let event = fixture_event(
+            ProtocolType::Common,
+            1,
+            EventPayload::Common(CommonPayload {
+                self_app_package: "com.eg.android.AlipayGphone".into(),
+                self_app_name: "支付宝".into(),
+                model: "23127PN0CC".into(),
+                brand: "Xiaomi".into(),
+                os: "Android".into(),
+                os_version: "15".into(),
+            }),
+        );
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_envelope(&value, "common", 1);
+        assert_eq!(
+            value["payload"],
+            json!({
+                "self_app_package": "com.eg.android.AlipayGphone",
+                "self_app_name": "支付宝",
+                "model": "23127PN0CC",
+                "brand": "Xiaomi",
+                "os": "Android",
+                "os_version": "15"
             })
         );
     }
