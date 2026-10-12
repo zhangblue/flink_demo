@@ -2,10 +2,11 @@
 
 ## 目标
 
-在仓库根目录新增 Maven 工程 `processer`。该工程使用 Apache Flink 从 Kafka
+在仓库根目录新增 Maven 工程 `flink_processer`。该工程使用 Apache Flink 从 Kafka
 `flink_demo` topic 读取手机事件，以 `(udid, start_id)` 为业务 key，在 2 分钟处理时间
 滚动窗口内找到 `app` 事件对应的应用名称和版本，并将这两个字段补充到同窗口、同 key
-的非 `app` 事件顶层。处理结果写入 Kafka `flink_output` topic。
+的非 `app` 事件顶层。成功补全的非 `app` 事件和原始 `app` 事件写入 Kafka
+`flink_output` topic；任何未能完整补全的非 `app` 事件写入 Kafka `flink_error` topic。
 
 ## 输入契约
 
@@ -52,8 +53,13 @@ Processing Time Tumbling Window。窗口使用 Flink 管理的窗口状态缓存
 这样结果不依赖窗口迭代顺序。
 
 若窗口中没有 `app` 事件、`self_package_name` 在 `apps` 中没有匹配项，或匹配项缺少
-`app_name`/`version_name`，则所有非 `app` 输出仍包含这两个顶层字段，字段值均为 JSON
-`null`。不会使用 `start.payload.app_version` 代替安装列表中的 `version_name`。
+非空的 `app_name`/`version_name`，则对应非 `app` 事件仍增加顶层 `app_name` 和
+`app_version` 字段，无法取得的字段值为 JSON `null`，并路由到 `flink_error`。只要任一字段
+为 `null` 或空字符串，就视为补全失败。不会使用 `start.payload.app_version` 代替安装列表中的
+`version_name`。
+
+`app` 事件本身不属于待补全数据，无论其安装列表能否匹配，都保持原 JSON 并写入
+`flink_output`，不会因为缺少顶层 `app_name`/`app_version` 被路由到 `flink_error`。
 
 窗口内输出按顶层 `sequence` 升序排列；序号相同的记录按 `event_timestamp`、`event_id`
 依次排序，以提供确定性的单 key 输出顺序。
@@ -68,19 +74,21 @@ KafkaSource(flink_demo)
   -> keyBy(udid + start_id)
   -> 2 分钟处理时间滚动窗口
   -> 窗口补全
-  -> JSON 序列化
-  -> KafkaSink(flink_output)
+  -> 成功流 -> JSON 序列化 -> KafkaSink(flink_output)
+  -> 失败侧输出 -> JSON 序列化 -> KafkaSink(flink_error)
 ```
 
 输入 topic 默认是 `flink_demo`，输出 topic 默认是 `flink_output`。Kafka bootstrap servers、
-consumer group、输入 topic、输出 topic 和作业并行度通过命令行参数配置，默认值集中在配置
-类中。Kafka Source 默认从 consumer group 已提交 offset 开始；不存在已提交 offset 时从最早
-位置开始。Kafka Sink 使用至少一次投递语义，并启用周期性 checkpoint；下游应继续以
-`event_id` 作为事件幂等标识。
+错误 topic 默认是 `flink_error`。Kafka bootstrap servers、consumer group、输入 topic、正常
+输出 topic、错误 topic 和作业并行度通过命令行参数配置，默认值集中在配置类中。Kafka
+Source 默认从 consumer group 已提交 offset 开始；不存在已提交 offset 时从最早位置开始。
+两个 Kafka Sink 均使用至少一次投递语义，并启用周期性 checkpoint；下游应继续以
+`event_id` 作为事件幂等标识。每条输入事件只进入一个输出 topic，不同时写入正常和错误
+topic。
 
 ## 工程结构
 
-`processer` 使用 Java、Maven 和 Apache Flink 2.2.0。代码按职责拆分：
+`flink_processer` 使用 Java、Maven 和 Apache Flink 2.2.0。代码按职责拆分：
 
 - 作业入口负责读取配置、组装 Source、窗口处理和 Sink。
 - 配置类负责命令行参数解析与校验。
@@ -93,7 +101,8 @@ consumer group、输入 topic、输出 topic 和作业并行度通过命令行�
 ## 错误处理与可观测性
 
 - 无法解析或缺少业务 key 的输入使作业失败，不静默提交其 Kafka offset。
-- App 信息缺失属于可处理的业务数据问题，输出 `null` 字段，不使作业失败。
+- App 信息缺失属于可处理的业务数据问题，输出带 `null` 字段的原事件到 `flink_error`，
+  不使作业失败。
 - 作业入口为 Source、窗口算子和 Sink 设置稳定名称与 UID，便于从 checkpoint/savepoint
   恢复和定位指标。
 - 日志不打印完整安装列表，只记录异常摘要和业务 key，避免大消息造成日志膨胀。
@@ -107,7 +116,10 @@ consumer group、输入 topic、输出 topic 和作业并行度通过命令行�
   `app_version`。
 - 不同 `udid` 或不同 `start_id` 的数据不会互相补全。
 - `app` 事件保持原样，非 `app` 事件保留原字段并增加两个顶层字段。
-- 缺少 App、包名不匹配或 App 元数据缺失时输出两个 `null`。
+- 缺少 App、包名不匹配、App 元数据缺失或字段为空时，非 `app` 事件只写入
+  `flink_error`，并以 `null` 表示无法取得的字段。
+- 成功补全的非 `app` 事件和原始 `app` 事件只写入 `flink_output`。
+- 每条事件只路由到一个 topic。
 - 多条 App 事件和输入乱序时结果保持确定。
 - 处理时间跨越滚动窗口边界时，两侧数据不会跨窗口关联，记录已接受的边界行为。
 - 窗口触发后释放窗口状态。
