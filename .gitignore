@@ -3,6 +3,7 @@ target/
 
 # Local implementation workflow records
 .superpowers/
+.worktrees/
 
 # Local environment and logs
 .env
