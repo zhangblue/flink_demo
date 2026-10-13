@@ -9,15 +9,12 @@ import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsIni
 import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 
-import java.time.Duration;
-
 /**
- * 手机事件 App 信息补全作业入口。
+ * 手机事件公共信息补全作业入口。
  *
- * <p>作业从 Kafka 读取原始事件，在两分钟处理时间滚动窗口内完成关联，再将正常和异常数据
+ * <p>作业从 Kafka 读取原始事件，按组合键维护补全状态，再将正常和异常数据
  * 分别写入两个 Kafka topic。</p>
  */
 public final class EventEnrichmentJob {
@@ -27,7 +24,7 @@ public final class EventEnrichmentJob {
         JobConfig config = JobConfig.fromArgs(args);
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         buildPipeline(env, config);
-        env.execute("mobile-event-app-enrichment");
+        env.execute("mobile-event-common-enrichment");
     }
 
     public static void buildPipeline(StreamExecutionEnvironment env, JobConfig config) {
@@ -49,17 +46,11 @@ public final class EventEnrichmentJob {
                 .map(new EventRecordParser()).uid("parse-json")
                 // Flink 内部分组和下游 Kafka record 使用完全相同的组合 key。
                 .keyBy(EventRecord::recordKey)
-                .window(createWindowAssigner())
-                .process(new AppEnrichmentWindowFunction()).uid("app-enrichment-window");
+                .process(new CommonStateEnrichmentFunction()).uid("common-state-enrichment");
 
         output.sinkTo(createSink(config, config.outputTopic())).uid("kafka-output-sink");
-        output.getSideOutput(AppEnrichmentWindowFunction.ERROR_OUTPUT_TAG)
+        output.getSideOutput(CommonStateEnrichmentFunction.ERROR_OUTPUT_TAG)
                 .sinkTo(createSink(config, config.errorTopic())).uid("kafka-error-sink");
-    }
-
-    static TumblingProcessingTimeWindows createWindowAssigner() {
-        // 采用固定、互不重叠的窗口；跨窗口数据按既定契约不再关联补全。
-        return TumblingProcessingTimeWindows.of(Duration.ofMinutes(2));
     }
 
     private static KafkaSink<OutputEvent> createSink(JobConfig config, String topic) {
