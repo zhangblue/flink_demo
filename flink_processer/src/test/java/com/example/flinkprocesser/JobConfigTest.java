@@ -9,6 +9,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class JobConfigTest {
+    // 捕获忽略存储目录参数、允许非绝对本地 file URI 的回归。
+    @ParameterizedTest
+    @ValueSource(strings = {"", " ", "relative/path", "file:relative/path", "file://relative",
+            "hdfs:///checkpoints", "s3:///checkpoints", "file:///bad path"})
+    void rejectsInvalidCheckpointStorageUri(String uri) {
+        assertThatThrownBy(() -> JobConfig.fromArgs(new String[]{"--checkpoint-storage-uri", uri}))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", " ", "relative/path", "file:relative/path", "file://relative",
+            "hdfs:///savepoints", "s3:///savepoints", "file:///bad path"})
+    void rejectsInvalidSavepointStorageUri(String uri) {
+        assertThatThrownBy(() -> JobConfig.fromArgs(new String[]{"--savepoint-storage-uri", uri}))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     void usesRequestedDefaults() {
         JobConfig config = JobConfig.fromArgs(new String[0]);
@@ -20,6 +37,8 @@ class JobConfigTest {
         assertThat(config.groupId()).isEqualTo("flink-processer");
         assertThat(config.parallelism()).isEqualTo(1);
         assertThat(config.checkpointIntervalMs()).isEqualTo(60_000L);
+        assertThat(config.checkpointStorageUri()).isEqualTo("file:///home/zhangdi/workspace/flink_data/checkpoints");
+        assertThat(config.savepointStorageUri()).isEqualTo("file:///home/zhangdi/workspace/flink_data/savepoints");
     }
 
     @Test
@@ -28,10 +47,30 @@ class JobConfigTest {
                 "--bootstrap-servers", " broker:9092 ", "--input-topic", " in ",
                 "--output-topic", " out ", "--error-topic", " errors ",
                 "--group-id", " group ", "--parallelism", "4",
-                "--checkpoint-interval-ms", "1500"
+                "--checkpoint-interval-ms", "1500",
+                "--checkpoint-storage-uri", " file:///tmp/checkpoints ",
+                "--savepoint-storage-uri", " file:///tmp/savepoints "
         });
 
-        assertThat(config).isEqualTo(new JobConfig("broker:9092", "in", "out", "errors", "group", 4, 1500L));
+        assertThat(config).isEqualTo(new JobConfig("broker:9092", "in", "out", "errors", "group", 4, 1500L,
+                "file:///tmp/checkpoints", "file:///tmp/savepoints"));
+    }
+
+    @Test
+    void rejectsNullStorageUrisAtConstruction() {
+        assertThatThrownBy(() -> new JobConfig("broker:9092", "in", "out", "errors", "group", 1, 1500L,
+                null, "file:///tmp/savepoints")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new JobConfig("broker:9092", "in", "out", "errors", "group", 1, 1500L,
+                "file:///tmp/checkpoints", null)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"checkpoint-storage-uri", "savepoint-storage-uri"})
+    void rejectsStorageOptionWithoutValue(String option) {
+        assertThatThrownBy(() -> JobConfig.fromArgs(new String[]{"--" + option}))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> JobConfig.fromArgs(new String[]{"--" + option, "--parallelism", "2"}))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @ParameterizedTest

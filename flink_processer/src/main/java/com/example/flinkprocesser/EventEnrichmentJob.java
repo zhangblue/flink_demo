@@ -5,6 +5,9 @@ import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.core.execution.CheckpointingMode;
+import org.apache.flink.configuration.CheckpointingOptions;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ExternalizedCheckpointRetention;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
@@ -27,8 +30,15 @@ public final class EventEnrichmentJob {
 
     public static void buildPipeline(StreamExecutionEnvironment env, JobConfig config) {
         env.setParallelism(config.parallelism());
+        Configuration flinkConfig = new Configuration();
+        flinkConfig.set(CheckpointingOptions.CHECKPOINT_STORAGE, "filesystem");
+        flinkConfig.set(CheckpointingOptions.CHECKPOINTS_DIRECTORY, config.checkpointStorageUri());
+        flinkConfig.set(CheckpointingOptions.SAVEPOINT_DIRECTORY, config.savepointStorageUri());
+        env.configure(flinkConfig);
         // Source 与两个 Sink 均采用至少一次语义，checkpoint 用于提交消费进度和恢复状态。
         env.enableCheckpointing(config.checkpointIntervalMs(), CheckpointingMode.AT_LEAST_ONCE);
+        env.getCheckpointConfig().setExternalizedCheckpointRetention(
+                ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION);
 
         KafkaSource<EventRecord> source = KafkaSource.<EventRecord>builder()
                 .setBootstrapServers(config.bootstrapServers())

@@ -1,5 +1,6 @@
 package com.example.flinkprocesser;
 
+import java.net.URI;
 import org.apache.flink.util.ParameterTool;
 
 /** Flink 作业的命令行配置及集中校验规则。 */
@@ -10,7 +11,9 @@ public record JobConfig(
         String errorTopic,
         String groupId,
         int parallelism,
-        long checkpointIntervalMs) {
+        long checkpointIntervalMs,
+        String checkpointStorageUri,
+        String savepointStorageUri) {
 
     public JobConfig {
         bootstrapServers = requiredString(bootstrapServers, "bootstrap-servers");
@@ -18,6 +21,8 @@ public record JobConfig(
         outputTopic = requiredString(outputTopic, "output-topic");
         errorTopic = requiredString(errorTopic, "error-topic");
         groupId = requiredString(groupId, "group-id");
+        checkpointStorageUri = absoluteFileUri(checkpointStorageUri, "checkpoint-storage-uri");
+        savepointStorageUri = absoluteFileUri(savepointStorageUri, "savepoint-storage-uri");
         if (inputTopic.equals(outputTopic) || inputTopic.equals(errorTopic) || outputTopic.equals(errorTopic)) {
             throw new IllegalArgumentException("Input, output and error topics must be distinct");
         }
@@ -38,7 +43,9 @@ public record JobConfig(
                 stringParameter(parameters, "error-topic", "flink_error"),
                 stringParameter(parameters, "group-id", "flink-processer"),
                 parameters.getInt("parallelism", 1),
-                parameters.getLong("checkpoint-interval-ms", 60_000L));
+                parameters.getLong("checkpoint-interval-ms", 60_000L),
+                stringParameter(parameters, "checkpoint-storage-uri", "file:///home/zhangdi/workspace/flink_data/checkpoints"),
+                stringParameter(parameters, "savepoint-storage-uri", "file:///home/zhangdi/workspace/flink_data/savepoints"));
     }
 
     private static String stringParameter(ParameterTool parameters, String name, String defaultValue) {
@@ -55,5 +62,14 @@ public record JobConfig(
             throw new IllegalArgumentException(name + " must not be blank");
         }
         return value.trim();
+    }
+
+    private static String absoluteFileUri(String value, String name) {
+        String validated = requiredString(value, name);
+        URI uri = URI.create(validated);
+        if (!"file".equalsIgnoreCase(uri.getScheme()) || uri.getPath() == null || !uri.getPath().startsWith("/")) {
+            throw new IllegalArgumentException(name + " must be an absolute file URI");
+        }
+        return validated;
     }
 }

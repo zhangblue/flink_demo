@@ -10,6 +10,8 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.core.execution.CheckpointingMode;
+import org.apache.flink.configuration.CheckpointingOptions;
+import org.apache.flink.configuration.ExternalizedCheckpointRetention;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -24,13 +26,50 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class EventEnrichmentJobTest {
+    // 捕获未配置持久化目录或取消作业时删除 checkpoint 的回归。
+    @Test
+    void configuresPersistentDefaultDirectories() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        EventEnrichmentJob.buildPipeline(env, JobConfig.fromArgs(new String[0]));
+
+        assertThat(env.getConfiguration().get(CheckpointingOptions.CHECKPOINT_STORAGE)).isEqualTo("filesystem");
+        assertThat(env.getConfiguration().get(CheckpointingOptions.CHECKPOINTS_DIRECTORY))
+                .isEqualTo("file:///home/zhangdi/workspace/flink_data/checkpoints");
+        assertThat(env.getConfiguration().get(CheckpointingOptions.SAVEPOINT_DIRECTORY))
+                .isEqualTo("file:///home/zhangdi/workspace/flink_data/savepoints");
+    }
+
+    @Test
+    void retainsCheckpointsOnCancellation() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        EventEnrichmentJob.buildPipeline(env, JobConfig.fromArgs(new String[0]));
+
+        assertThat(env.getCheckpointConfig().getExternalizedCheckpointRetention())
+                .isEqualTo(ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION);
+    }
+
+    @Test
+    void configuresOverriddenDirectories() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        JobConfig config = JobConfig.fromArgs(new String[]{
+                "--checkpoint-storage-uri", "file:///tmp/custom-checkpoints",
+                "--savepoint-storage-uri", "file:///tmp/custom-savepoints"});
+        EventEnrichmentJob.buildPipeline(env, config);
+
+        assertThat(env.getConfiguration().get(CheckpointingOptions.CHECKPOINTS_DIRECTORY))
+                .isEqualTo("file:///tmp/custom-checkpoints");
+        assertThat(env.getConfiguration().get(CheckpointingOptions.SAVEPOINT_DIRECTORY))
+                .isEqualTo("file:///tmp/custom-savepoints");
+    }
+
     // 捕获策略放错算子、使用 Kafka 时间或没有产生有界乱序水位线的回归。
     @Test
     @SuppressWarnings("unchecked")
     void sourceAssignsEventTimestampAndGeneratesWatermarksWithIdleTimeout() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         EventEnrichmentJob.buildPipeline(env,
-                new JobConfig("localhost:9092", "input", "output", "errors", "test-group", 1, 1500L));
+                new JobConfig("localhost:9092", "input", "output", "errors", "test-group", 1, 1500L,
+                        "file:///tmp/checkpoints", "file:///tmp/savepoints"));
         var source = env.getTransformations().stream()
                 .flatMap(transformation -> transformation.getTransitivePredecessors().stream())
                 .filter(transformation -> "kafka-source".equals(transformation.getUid()))
@@ -73,7 +112,8 @@ class EventEnrichmentJobTest {
     @Test
     void buildsKeyedProcessWithBothKafkaSinkBranches() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        JobConfig config = new JobConfig("localhost:9092", "input", "output", "errors", "test-group", 3, 1500L);
+        JobConfig config = new JobConfig("localhost:9092", "input", "output", "errors", "test-group", 3, 1500L,
+                "file:///tmp/checkpoints", "file:///tmp/savepoints");
 
         EventEnrichmentJob.buildPipeline(env, config);
         StreamGraph graph = env.getStreamGraph();
@@ -93,7 +133,8 @@ class EventEnrichmentJobTest {
     @Test
     void connectsBothKafkaSinkInstances() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        JobConfig config = new JobConfig("localhost:9092", "input", "output", "errors", "test-group", 3, 1500L);
+        JobConfig config = new JobConfig("localhost:9092", "input", "output", "errors", "test-group", 3, 1500L,
+                "file:///tmp/checkpoints", "file:///tmp/savepoints");
 
         EventEnrichmentJob.buildPipeline(env, config);
 
