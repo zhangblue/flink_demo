@@ -6,7 +6,7 @@
 
 - Java 17（本工程按 Java 17 编译）。
 - Maven 3.9.x。
-- 已启动且可提交作业的 Apache Flink 2.2.0 集群，`flink` 命令位于 `PATH`。
+- 已启动且可提交作业的 Apache Flink 2.3.0 集群，`flink` 命令位于 `PATH`。
 - Flink 集群可访问 Kafka；输入、成功输出、错误输出三个 topic 必须互不相同，并具有相应读写权限。
 
 从仓库根目录构建：
@@ -15,7 +15,7 @@
 mvn -f flink_processer/pom.xml clean package
 ```
 
-也可在本目录执行 `mvn clean package`。产物为 `flink_processer/target/flink-processer-1.0.0.jar`，是包含 Kafka connector/client 和 JSON 依赖的 fat JAR；Flink runtime 核心依赖由集群提供。工程使用 Flink 2.2.0 和 Kafka connector `5.0.0-2.2`。
+也可在本目录执行 `mvn clean package`。产物为 `flink_processer/target/flink-processer-1.0.0.jar`，是包含 Kafka connector/client 和 JSON 依赖的 fat JAR；Flink runtime 核心依赖由集群提供。工程使用 Flink 2.3.0 和 Kafka connector `5.0.0-2.2`。
 
 ## 提交作业
 
@@ -40,7 +40,7 @@ flink run --detached \
   --checkpoint-interval-ms 60000
 ```
 
-`--detached` 和 `-c` 是 Flink CLI 参数，JAR 路径之后的是作业参数。入口类也已写入 JAR manifest，因此默认示例可省略 `-c`。提交语法参考 [Flink 2.2 CLI 文档](https://github.com/apache/flink/blob/release-2.2.0/docs/content/docs/deployment/cli.md)。
+`--detached` 和 `-c` 是 Flink CLI 参数，JAR 路径之后的是作业参数。入口类也已写入 JAR manifest，因此默认示例可省略 `-c`。提交语法参考 [Flink 2.3 CLI 文档](https://github.com/apache/flink/blob/release-2.3.0/docs/content/docs/deployment/cli.md)。
 
 全部作业参数如下：
 
@@ -54,7 +54,27 @@ flink run --detached \
 | `--parallelism` | `1` | 作业并行度，必须为正整数 |
 | `--checkpoint-interval-ms` | `60000` | Checkpoint 间隔，单位毫秒，必须为正整数 |
 
-字符串参数不能留空，三个 topic 不能相同。新消费任务默认从 consumer group 已提交的 offset 开始；没有已提交 offset 时从最早位置开始。新作业处理算子的 UID 为 `common-state-enrichment`，与旧窗口算子的 UID 不同；旧 savepoint 中的窗口状态不能迁移到新算子。升级时应从新部署启动，或在确认旧状态可以丢弃后使用 Flink 的未恢复状态选项。
+字符串参数不能留空，三个 topic 不能相同。新消费任务默认优先从 consumer group 已提交的 offset 开始；没有已提交 offset 时从最早位置开始。恢复 checkpoint/savepoint 时，恢复状态中记录的 Kafka source offset 优先，consumer group 已提交 offset 和此初始 offset 策略只用于没有可恢复 source 状态的新启动。新作业处理算子的 UID 为 `common-state-enrichment`，与旧窗口算子的 UID 不同；旧 savepoint 中的窗口状态不能迁移到新算子。升级时应从新部署启动，或在确认旧状态可以丢弃后使用 Flink 的未恢复状态选项。
+
+## 事件时间与状态清理
+
+作业解析输入时检查 `event_timestamp`。只有时间戳严格晚于解析时刻 5 秒以上（`event_timestamp > 当前时间 + 5000 毫秒`）才会被校正为当前时间；恰好晚 5 秒不校正。校正后的时间戳也会写回事件 JSON，保证水位线和输出记录使用一致的值。水位线允许 5 秒乱序；Kafka 分区连续 1 分钟没有记录后会被标记为空闲，避免空闲分区持续拖住其他分区的水位线。
+
+每个 `(udid, start_id)` 的状态清理截止时间是该 key 已观察到的最大事件时间加 30 秒。后续时间较早的事件不会把截止时间往回移动。清理通过事件时间定时器触发，所以需要水位线越过截止时间。分区空闲策略只处理部分分区无数据的情况；如果全流停滞，没有新事件推动水位线，事件时间清理也会停住，已过期状态会暂时保留，直到流量恢复并推进水位线。
+
+## Checkpoint 与恢复
+
+默认本地存储目录为 Ubuntu 主机上的 `file:///home/zhangdi/workspace/flink_data/checkpoints` 和 `file:///home/zhangdi/workspace/flink_data/savepoints`。提交作业的 Flink 用户需要对这些目录有读写权限；其他环境可通过 `--checkpoint-storage-uri` 和 `--savepoint-storage-uri` 指定绝对本地 `file:` URI。作业每 60 秒 checkpoint，并设置 `RETAIN_ON_CANCELLATION`，取消作业时保留外部化 checkpoint。
+
+从保留的 checkpoint 恢复时，将 `_metadata` 文件路径传给 Flink CLI 的 `-s`：
+
+```bash
+flink run --detached \\
+  -s file:///home/zhangdi/workspace/flink_data/checkpoints/checkpoint-directory/_metadata \\
+  flink_processer/target/flink-processer-1.0.0.jar
+```
+
+该 source 与两个 Kafka sink 都是至少一次语义。失败恢复可能重放 checkpoint 之后已处理或已写出的记录，造成 Kafka 输出重复；`event_id` 可供下游幂等去重，不能据此认为端到端精确一次。
 
 ## 输入字段
 
@@ -97,7 +117,7 @@ JSON 无法解析、不是对象，或缺少有效的 `udid`、`start_id`、`pro
 
 ## 状态清理与限制
 
-每条任意类型的消息（包括完整或不完整的 `common`）都会把当前组合 key 的处理时间清理时刻顺延 30 秒。最后一条消息到达后，若 30 秒内没有该 key 的新消息，定时器清除 common 元数据状态和清理计时状态。`event_timestamp` 不决定清理时刻。状态清理后到达的非 `common` 事件按无状态规则进入错误 topic。
+每个组合 key 的状态清理截止时间为已观察到的最大 `event_timestamp` 加 30 秒。较早时间戳的后续记录不会缩短截止时间；水位线越过截止时间时，定时器清除 common 元数据状态和清理计时状态。分区 idleness 不能推进全流停滞时的水位线，因此全流停滞会延迟清理。状态清理后到达的非 `common` 事件按无状态规则进入错误 topic。
 
 Checkpoint 和两个 Kafka Sink 均使用至少一次语义，故障恢复可能重复输出事件。下游可使用 `event_id` 做幂等处理，路由互斥不代表精确一次投递。
 
@@ -107,8 +127,9 @@ Checkpoint 和两个 Kafka Sink 均使用至少一次语义，故障恢复可能
 
 ```bash
 mvn -f flink_processer/pom.xml clean verify
+git diff --check
 jar tf flink_processer/target/flink-processer-1.0.0.jar \
-  | rg 'CommonStateEnrichmentFunction|CommonMetadata|OutputEventKafkaSerializer|org/apache/kafka'
+  | rg 'EventRecordKafkaDeserializer|EventTimePolicy|CommonStateEnrichmentFunction|org/apache/kafka'
 ```
 
-自动化测试验证解析、默认参数、common 元数据提取、状态补全与路由、输出 record key 和作业拓扑；JAR 检查验证新状态函数、元数据类、serializer 及 Kafka 依赖已打包。这些检查不替代真实 Flink/Kafka 集群联调。
+自动化测试验证解析、默认参数、common 元数据提取、状态补全与路由、输出 record key 和作业拓扑；JAR 检查验证事件时间解析类、策略类、状态函数及 Kafka 依赖已打包。这些检查不替代真实 Flink/Kafka 集群联调；本文档对应的是本地构建验证，不表示已在远端 Flink/Kafka 集群验证。
