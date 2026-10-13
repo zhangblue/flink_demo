@@ -9,6 +9,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class JobConfigTest {
+    // 捕获 Flink 不支持的 authority/scheme，或 URI 经 Path(String) 后目录语义改变。
+    @ParameterizedTest
+    @CsvSource({
+            "checkpoint-storage-uri,file://remote-host/tmp/checkpoints",
+            "savepoint-storage-uri,file://remote-host/tmp/savepoints",
+            "checkpoint-storage-uri,FILE:///tmp/checkpoints",
+            "savepoint-storage-uri,FILE:///tmp/savepoints",
+            "checkpoint-storage-uri,file:///tmp/my%20checkpoints",
+            "savepoint-storage-uri,file:///tmp/my%20savepoints",
+            "checkpoint-storage-uri,file:///tmp/my%25checkpoints",
+            "savepoint-storage-uri,file:///tmp/my%25savepoints",
+            "checkpoint-storage-uri,file:///tmp/checkpoints?ignored",
+            "savepoint-storage-uri,file:///tmp/savepoints?ignored",
+            "checkpoint-storage-uri,file:///tmp/checkpoints#ignored",
+            "savepoint-storage-uri,file:///tmp/savepoints#ignored",
+            "checkpoint-storage-uri,file:///tmp/checkpoints?",
+            "savepoint-storage-uri,file:///tmp/savepoints?",
+            "checkpoint-storage-uri,file:///tmp/checkpoints#",
+            "savepoint-storage-uri,file:///tmp/savepoints#"
+    })
+    void rejectsUrisThatCannotPreserveLocalFlinkPathSemantics(String option, String uri) {
+        assertThatThrownBy(() -> JobConfig.fromArgs(new String[]{"--" + option, uri}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(option)
+                .hasMessageContaining("lowercase file scheme")
+                .hasMessageContaining("without authority, query, fragment or percent-encoding");
+    }
+
     // 捕获忽略存储目录参数、允许非绝对本地 file URI 的回归。
     @ParameterizedTest
     @ValueSource(strings = {"", " ", "relative/path", "file:relative/path", "file://relative",

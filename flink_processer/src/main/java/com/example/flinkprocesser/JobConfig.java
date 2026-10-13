@@ -67,8 +67,13 @@ public record JobConfig(
     private static String absoluteFileUri(String value, String name) {
         String validated = requiredString(value, name);
         URI uri = URI.create(validated);
-        if (!"file".equalsIgnoreCase(uri.getScheme()) || uri.getPath() == null || !uri.getPath().startsWith("/")) {
-            throw new IllegalArgumentException(name + " must be an absolute file URI");
+        // Flink Path(String) 不解码百分号编码，也不把 query/fragment 作为 URI 元数据。
+        // 限定为无歧义的本地目录，避免配置指向不同目录或在运行时才无法解析文件系统。
+        if (!"file".equals(uri.getScheme()) || uri.getPath() == null || !uri.getPath().startsWith("/")
+                || uri.getRawAuthority() != null || uri.getRawQuery() != null || uri.getRawFragment() != null
+                || validated.contains("%")) {
+            throw new IllegalArgumentException(name + " must be an absolute local URI with lowercase file scheme"
+                    + " without authority, query, fragment or percent-encoding");
         }
         return validated;
     }
