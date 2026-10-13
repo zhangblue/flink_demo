@@ -6,6 +6,7 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.runtime.state.VoidNamespace;
 import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
 import org.apache.flink.streaming.api.operators.TimerHeapInternalTimer;
+import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.ProcessFunctionTestHarnesses;
@@ -55,7 +56,8 @@ class CommonStateEnrichmentFunctionTest {
         assertThat(mainOutput()).isEmpty();
         assertThat(errorOutput()).isEmpty();
         assertThat(harness.numKeyedStateEntries()).isEqualTo(2);
-        assertThat(harness.numProcessingTimeTimers()).isEqualTo(1);
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numProcessingTimeTimers()).isZero();
     }
 
     // 抓住遗漏 app/任一非 common 类型、延迟输出、错误分支双写或六字段映射错误。
@@ -152,26 +154,27 @@ class CommonStateEnrichmentFunctionTest {
         assertNullMetadata(errorOutput().get(0), "device-2_1", "start");
         assertNullMetadata(errorOutput().get(1), "device-1_2", "app");
         assertCompleteMetadata(mainOutput().get(0), "device-1_1", "environment");
-        assertThat(harness.numProcessingTimeTimers()).isEqualTo(3);
+        assertThat(harness.numEventTimeTimers()).isEqualTo(3);
+        assertThat(harness.numProcessingTimeTimers()).isZero();
     }
 
-    // 抓住任意分支漏续期、旧 timer 未删、到旧时刻提前清理或当前 timer 未清两个状态。
+    // 抓住任意分支漏续期、使用处理时间、旧 timer 未删或 watermark 到期未清两个状态。
     @ParameterizedTest
     @ValueSource(strings = {"start", "devinfo", "environment", "app", "common", "incomplete-common"})
-    void everyMessageRenewsSingleProcessingTimerAndExpiresAtCurrentDeadline(String renewingType)
+    void everyMessageRenewsSingleEventTimerAndExpiresAtCurrentDeadline(String renewingType)
             throws Exception {
-        harness.setProcessingTime(1_000L);
-        harness.processElement(common("device-1", 1L), -100L);
-        assertThat(harness.numProcessingTimeTimers()).isEqualTo(1);
+        harness.processElement(common("device-1", 1L, 1_000L), -100L);
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numProcessingTimeTimers()).isZero();
 
-        harness.setProcessingTime(20_000L);
         EventRecord renewing = switch (renewingType) {
-            case "common" -> common("device-1", 1L);
-            case "incomplete-common" -> incompleteCommon("device-1", 1L);
-            default -> nonCommon("device-1", 1L, renewingType);
+            case "common" -> common("device-1", 1L, 20_000L);
+            case "incomplete-common" -> event("device-1", 1L, "common", INCOMPLETE_PAYLOAD, 20_000L);
+            default -> nonCommon("device-1", 1L, renewingType, 20_000L);
         };
         harness.processElement(renewing, -200L);
-        assertThat(harness.numProcessingTimeTimers()).isEqualTo(1);
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numProcessingTimeTimers()).isZero();
         int mainCount = renewingType.endsWith("common") ? 0 : 1;
         int errorCount = renewingType.equals("incomplete-common") ? 1 : 0;
         assertThat(mainOutput()).hasSize(mainCount);
@@ -183,33 +186,57 @@ class CommonStateEnrichmentFunctionTest {
             assertEnvelope(errorOutput().get(0), "device-1_1", "common");
         }
 
-        harness.setProcessingTime(31_000L);
-        assertThat(harness.numProcessingTimeTimers()).isEqualTo(1);
+        harness.setProcessingTime(100_000L);
         assertThat(harness.numKeyedStateEntries()).isEqualTo(2);
-        harness.setProcessingTime(49_999L);
+        harness.processWatermark(new Watermark(31_000L));
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numKeyedStateEntries()).isEqualTo(2);
+        harness.processWatermark(new Watermark(49_999L));
         assertThat(harness.numKeyedStateEntries()).isEqualTo(2);
 
-        harness.setProcessingTime(50_000L);
+        harness.processWatermark(new Watermark(50_000L));
+        assertThat(harness.numEventTimeTimers()).isZero();
         assertThat(harness.numProcessingTimeTimers()).isZero();
         assertThat(harness.numKeyedStateEntries()).isZero();
         assertThat(mainOutput()).hasSize(mainCount);
         assertThat(errorOutput()).hasSize(errorCount);
 
-        harness.processElement(nonCommon("device-1", 1L, "environment"), 50_000L);
+        harness.processElement(nonCommon("device-1", 1L, "environment", 50_000L), 50_000L);
         assertThat(mainOutput()).hasSize(mainCount);
         assertThat(errorOutput()).hasSize(errorCount + 1);
         assertNullMetadata(errorOutput().get(errorCount), "device-1_1", "environment");
-        assertThat(harness.numProcessingTimeTimers()).isEqualTo(1);
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numProcessingTimeTimers()).isZero();
+    }
+
+    // 抓住乱序事件把已续期的截止时间回退，导致最新事件对应的状态提前被删。
+    @Test
+    void outOfOrderEventCannotMoveCleanupDeadlineBackwards() throws Exception {
+        harness.processElement(common("device-1", 1L, 1_000L), 1_000L);
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numProcessingTimeTimers()).isZero();
+        harness.processElement(nonCommon("device-1", 1L, "app", 20_000L), 20_000L);
+        harness.processElement(nonCommon("device-1", 1L, "devinfo", 10_000L), 10_000L);
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numProcessingTimeTimers()).isZero();
+        harness.processWatermark(new Watermark(49_999L));
+        assertThat(harness.numKeyedStateEntries()).isEqualTo(2);
+        harness.processWatermark(new Watermark(50_000L));
+        assertThat(harness.numKeyedStateEntries()).isZero();
+        assertThat(harness.numEventTimeTimers()).isZero();
+        assertThat(mainOutput()).hasSize(2);
+        assertThat(errorOutput()).isEmpty();
     }
 
     // 抓住用普通加法把清理时间溢出为过去值并继续产生业务输出。
     @Test
     void failsOnCleanupTimestampOverflowWithoutRegisteringTimer() throws Exception {
-        harness.setProcessingTime(Long.MAX_VALUE - 10_000L);
-
-        assertThatThrownBy(() -> harness.processElement(nonCommon("device-1", 1L, "start"), 0L))
+        assertThatThrownBy(() -> harness.processElement(
+                nonCommon("device-1", 1L, "start", Long.MAX_VALUE - 10_000L), 0L))
                 .isInstanceOf(ArithmeticException.class);
+        assertThat(harness.numEventTimeTimers()).isZero();
         assertThat(harness.numProcessingTimeTimers()).isZero();
+        assertThat(harness.numKeyedStateEntries()).isZero();
         assertThat(mainOutput()).isEmpty();
         assertThat(errorOutput()).isEmpty();
     }
@@ -217,14 +244,12 @@ class CommonStateEnrichmentFunctionTest {
     // 抓住陈旧 callback 未比较当前时间戳，误清最新状态；真实 operator 调用真实函数。
     @Test
     void staleTimerCallbackCannotClearRenewedMetadata() throws Exception {
-        harness.setProcessingTime(1_000L);
-        harness.processElement(common("device-1", 1L), 0L);
-        harness.setProcessingTime(20_000L);
-        harness.processElement(nonCommon("device-1", 1L, "start"), 0L);
+        harness.processElement(common("device-1", 1L, 1_000L), 0L);
+        harness.processElement(nonCommon("device-1", 1L, "start", 20_000L), 0L);
         @SuppressWarnings("unchecked")
         KeyedProcessOperator<String, EventRecord, OutputEvent> operator =
                 (KeyedProcessOperator<String, EventRecord, OutputEvent>) harness.getOperator();
-        operator.onProcessingTime(new TimerHeapInternalTimer<>(31_000L, "device-1_1", VoidNamespace.INSTANCE));
+        operator.onEventTime(new TimerHeapInternalTimer<>(31_000L, "device-1_1", VoidNamespace.INSTANCE));
         assertThat(harness.numKeyedStateEntries()).isEqualTo(2);
         assertThat(mainOutput()).hasSize(1);
         assertThat(errorOutput()).isEmpty();
@@ -250,6 +275,10 @@ class CommonStateEnrichmentFunctionTest {
         return event(device, startId, "common", COMPLETE_PAYLOAD);
     }
 
+    private static EventRecord common(String device, long startId, long timestamp) {
+        return event(device, startId, "common", COMPLETE_PAYLOAD, timestamp);
+    }
+
     private static EventRecord incompleteCommon(String device, long startId) {
         return event(device, startId, "common", INCOMPLETE_PAYLOAD);
     }
@@ -258,11 +287,20 @@ class CommonStateEnrichmentFunctionTest {
         return event(device, startId, type, "{\"marker\":\"preserved\"}");
     }
 
+    private static EventRecord nonCommon(String device, long startId, String type, long timestamp) {
+        return event(device, startId, type, "{\"marker\":\"preserved\"}", timestamp);
+    }
+
     private static EventRecord event(String device, long startId, String type, String payload) {
+        return event(device, startId, type, payload, 0L);
+    }
+
+    private static EventRecord event(String device, long startId, String type, String payload, long timestamp) {
         EventRecord event = new EventRecord();
         event.setUdid(device);
         event.setStartId(startId);
         event.setProtolType(type);
+        event.setEventTimestamp(timestamp);
         event.setJson("{\"udid\":\"" + device + "\",\"start_id\":" + startId
                 + ",\"protol_type\":\"" + type + "\",\"model\":\"old\",\"payload\":" + payload + "}");
         return event;

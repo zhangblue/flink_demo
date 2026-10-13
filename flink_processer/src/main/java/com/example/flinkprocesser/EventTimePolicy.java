@@ -8,7 +8,7 @@ public final class EventTimePolicy {
     public static final long FUTURE_TOLERANCE_MILLIS = 5_000L;
     public static final Duration OUT_OF_ORDERNESS = Duration.ofSeconds(5);
     public static final Duration IDLE_TIMEOUT = Duration.ofMinutes(1);
-    public static final long CLEANUP_INTERVAL_MILLIS = 30_000L;
+    public static final long STATE_CLEANUP_DELAY_MILLIS = 30_000L;
 
     private EventTimePolicy() {
     }
