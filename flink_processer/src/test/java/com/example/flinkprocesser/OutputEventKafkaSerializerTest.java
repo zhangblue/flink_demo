@@ -14,13 +14,16 @@ class OutputEventKafkaSerializerTest {
     @ParameterizedTest
     @ValueSource(strings = {"flink_output", "flink_error"})
     void preservesTopicBusinessKeyAndUtf8Json(String topic) {
-        OutputEvent event = new OutputEvent("device-1:1791614142000", "{\"app_name\":\"微信\"}");
+        OutputEvent event = new OutputEvent(
+                "device-1_1791614142000",
+                "{\"self_app_name\":\"微信\"}");
 
         ProducerRecord<byte[], byte[]> record = new OutputEventKafkaSerializer(topic)
                 .serialize(event, null, null);
 
         assertThat(record.topic()).isEqualTo(topic);
-        assertThat(new String(record.key(), UTF_8)).isEqualTo("device-1:1791614142000");
+        assertThat(new String(record.key(), UTF_8))
+                .isEqualTo("device-1_1791614142000");
         assertThat(new String(record.value(), UTF_8)).isEqualTo(event.json());
     }
 

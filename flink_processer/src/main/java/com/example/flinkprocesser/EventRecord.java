@@ -18,9 +18,9 @@ public class EventRecord {
         // Flink POJO 序列化器需要公开的无参构造器。
     }
 
-    /** 返回窗口分组及输出 Kafka record 共用的启动周期组合 key。 */
+    /** 返回状态分组和两个输出 Kafka record 共用的启动周期组合 key。 */
     public String recordKey() {
-        return udid + ":" + startId;
+        return udid + "_" + startId;
     }
 
     public String getJson() {

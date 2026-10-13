@@ -21,7 +21,7 @@ class EventRecordParserTest {
 
         assertThat(event.getUdid()).isEqualTo("device-1");
         assertThat(event.getStartId()).isEqualTo(1_791_614_142_000L);
-        assertThat(event.recordKey()).isEqualTo("device-1:1791614142000");
+        assertThat(event.recordKey()).isEqualTo("device-1_1791614142000");
         assertThat(event.getProtolType()).isEqualTo("start");
         assertThat(event.getJson()).isEqualTo(json);
         assertThat(event.getSequence()).isEqualTo(1L);
