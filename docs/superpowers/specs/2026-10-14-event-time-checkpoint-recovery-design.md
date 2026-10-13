@@ -7,8 +7,8 @@
 部署环境固定为：
 
 - Ubuntu 单机 Flink 2.3.0，安装目录 `/home/zhangdi/works/flink-2.3.0`；
-- checkpoint 目录 `file:///home/zhangdi/works/flink-data/checkpoints`；
-- savepoint 目录 `file:///home/zhangdi/works/flink-data/savepoints`；
+- checkpoint 目录 `file:///home/zhangdi/workspace/flink_data/checkpoints`；
+- savepoint 目录 `file:///home/zhangdi/workspace/flink_data/savepoints`；
 - 两个目录由用户在部署前创建，并保证 Flink 运行用户可读写；
 - checkpoint 和 savepoint 不写入版本化的 Flink 安装目录，也不写入 `/tmp`。
 
@@ -59,8 +59,8 @@ Kafka Source 直接反序列化为 `EventRecord`，保证时间校正发生在 t
 
 | 参数 | 默认值 |
 | --- | --- |
-| `--checkpoint-storage-uri` | `file:///home/zhangdi/works/flink-data/checkpoints` |
-| `--savepoint-storage-uri` | `file:///home/zhangdi/works/flink-data/savepoints` |
+| `--checkpoint-storage-uri` | `file:///home/zhangdi/workspace/flink_data/checkpoints` |
+| `--savepoint-storage-uri` | `file:///home/zhangdi/workspace/flink_data/savepoints` |
 
 代码将 checkpoint storage 配置为 filesystem，并设置 `ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION`。取消作业后 checkpoint 不自动删除，需要运维人员定期清理不再需要的旧作业目录。
 
@@ -76,7 +76,7 @@ Kafka Source 直接反序列化为 `EventRecord`，保证时间校正发生在 t
 
 ```bash
 /home/zhangdi/works/flink-2.3.0/bin/flink run --detached \
-  -s file:///home/zhangdi/works/flink-data/checkpoints/<job-id>/chk-<id>/_metadata \
+  -s file:///home/zhangdi/workspace/flink_data/checkpoints/<job-id>/chk-<id>/_metadata \
   flink-processer-1.0.0.jar
 ```
 
