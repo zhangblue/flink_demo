@@ -9,7 +9,7 @@
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <flink.version>2.2.0</flink.version>
+        <flink.version>2.3.0</flink.version>
         <flink.kafka.version>5.0.0-2.2</flink.kafka.version>
         <jackson.version>2.18.3</jackson.version>
     </properties>
@@ -48,7 +48,7 @@
             <version>5.11.4</version>
             <scope>test</scope>
         </dependency>
-        <!-- Flink 2.2 operator harnesses are published in the runtime test JAR. -->
+        <!-- Flink operator harnesses are published in the runtime test JAR. -->
         <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-runtime</artifactId>
