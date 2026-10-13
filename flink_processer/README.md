@@ -53,6 +53,8 @@ flink run --detached \
 | `--group-id` | `flink-processer` | Kafka consumer group |
 | `--parallelism` | `1` | 作业并行度，必须为正整数 |
 | `--checkpoint-interval-ms` | `60000` | Checkpoint 间隔，单位毫秒，必须为正整数 |
+| `--checkpoint-storage-uri` | `file:///home/zhangdi/workspace/flink_data/checkpoints` | Checkpoint 本地存储目录，必须是绝对 `file:` URI |
+| `--savepoint-storage-uri` | `file:///home/zhangdi/workspace/flink_data/savepoints` | Savepoint 本地存储目录，必须是绝对 `file:` URI |
 
 字符串参数不能留空，三个 topic 不能相同。新消费任务默认优先从 consumer group 已提交的 offset 开始；没有已提交 offset 时从最早位置开始。恢复 checkpoint/savepoint 时，恢复状态中记录的 Kafka source offset 优先，consumer group 已提交 offset 和此初始 offset 策略只用于没有可恢复 source 状态的新启动。新作业处理算子的 UID 为 `common-state-enrichment`，与旧窗口算子的 UID 不同；旧 savepoint 中的窗口状态不能迁移到新算子。升级时应从新部署启动，或在确认旧状态可以丢弃后使用 Flink 的未恢复状态选项。
 
@@ -69,8 +71,8 @@ flink run --detached \
 从保留的 checkpoint 恢复时，将 `_metadata` 文件路径传给 Flink CLI 的 `-s`：
 
 ```bash
-flink run --detached \\
-  -s file:///home/zhangdi/workspace/flink_data/checkpoints/checkpoint-directory/_metadata \\
+flink run --detached \
+  -s file:///home/zhangdi/workspace/flink_data/checkpoints/checkpoint-directory/_metadata \
   flink_processer/target/flink-processer-1.0.0.jar
 ```
 
@@ -86,11 +88,11 @@ flink run --detached \\
 | `start_id` | 64 位 integer | 启动周期的 Unix epoch 毫秒值 |
 | `protol_type` | 非空白 string | 事件类型，沿用既定拼写；只有 `common` 更新状态，其余类型（包括 `app`）按非 `common` 事件路由 |
 | `sequence` | integer | 启动周期内序号，由发送器提供；不参与补全选择 |
-| `event_timestamp` | integer | Unix epoch 毫秒值，由发送器提供；不决定状态清理时间 |
+| `event_timestamp` | 必填 64 位 integer | Unix epoch 毫秒值，由发送器提供；参与事件时间水位线和每 key 状态清理截止时间计算 |
 | `event_id` | string | 事件标识，供下游幂等处理 |
 | `payload` | object | 事件类型对应的数据；输出保留原 `payload` |
 
-JSON 无法解析、不是对象，或缺少有效的 `udid`、`start_id`、`protol_type` 时，作业抛出异常，由 Flink 的失败恢复策略处理。这类解析错误不写入 `flink_error`，也不会静默丢弃。若 `sequence` 或 `event_timestamp` 无法转换为整数，解析默认值为 `Long.MAX_VALUE`；若 `event_id` 缺失则默认为空字符串。这些默认值不影响即时补全和路由。
+JSON 无法解析、不是对象，或缺少有效的 `udid`、`start_id`、`protol_type`、`event_timestamp` 时，作业抛出异常，由 Flink 的失败恢复策略处理。这类解析错误不写入 `flink_error`，也不会静默丢弃。`event_timestamp` 必须是可转换为 64 位整数的 JSON 整数；缺失、非整数或超出 64 位范围都会导致解析失败，不会默认成 `Long.MAX_VALUE`。缺少或无法转换的 `sequence` 使用 `Long.MAX_VALUE`；缺少 `event_id` 则默认为空字符串。
 
 `common.payload` 必须包含下表六个非空白字符串；完整字段定义见 [sender 文档](../sender/README.md)。补全会将它们写入非 `common` 输出事件的同名顶层字段，并覆盖事件原有的同名顶层值。
 
