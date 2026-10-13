@@ -1,6 +1,6 @@
 # Flink Demo：手机事件模拟发送器
 
-本仓库包含 Rust/Tokio 手机 App 事件模拟发送器和 Java/Flink 事件补全作业。发送器持续生成多台 Android/iOS 设备的启动与运行数据并写入 Kafka；Flink 作业在 2 分钟处理时间滚动窗口内补全 App 名称和版本，将成功与错误事件分别写入 Kafka。
+本仓库包含 Rust/Tokio 手机 App 事件模拟发送器和 Java/Flink 事件补全作业。发送器持续生成多台 Android/iOS 设备的启动与运行数据并写入 Kafka；Flink 作业由首条完整 `common` 建立状态，在收到后续事件时即时补全，并将成功与错误事件分别写入 Kafka。
 
 ## 核心能力
 
@@ -10,7 +10,7 @@
 - 每次启动从设备安装列表随机选择当前 App；`start.payload.app_package` 与
   `app.payload.self_package_name` 在同一启动周期内保持一致。
 - 多设备通过 Tokio 并发运行，所有设备共享一个可配置的全局发送速率。
-- Kafka record key 使用 `udid`，确保同一设备的事件进入同一分区并保持顺序。
+- 发送器写入输入 topic 时，Kafka record key 使用 `udid`，确保同一设备的事件进入同一分区并保持顺序。
 - JSON 只使用 Unix 毫秒时间戳字段 `event_timestamp`，不包含 `event_time`。
 - 支持优雅关闭、发送队列背压、投递确认和 QueueFull 限时重试。
 
@@ -90,7 +90,7 @@ mvn -f flink_processer/pom.xml clean package
 flink run --detached flink_processer/target/flink-processer-1.0.0.jar
 ```
 
-提交前需启动 Flink 集群并确保其可访问 Kafka。作业默认消费 `flink_demo`，将成功事件写入 `flink_output`，补全失败的非 `app` 事件写入 `flink_error`。全部参数、输入字段和窗口限制见 [Flink 补全作业使用说明](flink_processer/README.md)。
+提交前需启动 Flink 集群并确保其可访问 Kafka。作业默认消费 `flink_demo`：完整 `common` 仅更新状态，不进入输出 topic；不完整 `common` 只进入 `flink_error`，且不覆盖旧状态；包括 `app` 在内的非 `common` 事件收到时立即补全，有完整状态只进入 `flink_output`，无状态时六个顶层字段为 `null`、只进入 `flink_error`。两个输出 topic 的 record key 均为 `<udid>_<start_id>`（如 `device-1_1791614142000`），与发送器输入 record key `udid` 不同。全部参数、输入字段和状态清理规则见 [Flink 补全作业使用说明](flink_processer/README.md)。
 
 ## 事件数据
 
