@@ -53,7 +53,8 @@ public class CommonStateEnrichmentFunction extends KeyedProcessFunction<String, 
      * <p>处理顺序如下：</p>
      * <ol>
      *   <li>无论消息类型是什么，先计算事件时间加 30 秒的清理候选值，只在候选值更晚时续期。
-     *       截止时间加法溢出会在任何状态变更和业务输出之前抛出异常。</li>
+     *       如果最终截止值已经被当前 watermark 到达，则移除过去的定时器，并在本条消息完成即时路由后
+     *       清空状态。截止时间加法溢出会在任何状态变更和业务输出之前抛出异常。</li>
      *   <li>如果是 {@code common}，从 payload 提取六个公共字段。字段完整时覆盖元数据状态且不输出；
      *       字段不完整时不修改已有元数据状态，把有效字段和显式 null 写到事件顶层后仅输出到错误侧流。</li>
      *   <li>如果不是 {@code common}，读取当前 key 的元数据状态并在事件顶层写入六个字段。状态存在时
@@ -65,30 +66,36 @@ public class CommonStateEnrichmentFunction extends KeyedProcessFunction<String, 
      */
     @Override
     public void processElement(EventRecord event, Context ctx, Collector<OutputEvent> out) throws Exception {
-        // 任意消息都参与事件时间生命周期管理，先校验截止值并续期，再执行业务分支。
-        refreshCleanupTimer(event, ctx.timerService());
-        if ("common".equals(event.getProtolType())) {
-            CommonMetadata candidate = CommonMetadataJson.extract(event.getJson());
-            if (candidate.isComplete()) {
-                // 后到的合法 common 会完整覆盖旧状态，但 common 本身不进入正常输出。
-                metadataState.update(candidate);
-            } else {
-                // 不完整 common 仅用于错误排查，不能污染当前 key 已存在的合法元数据。
-                ctx.output(ERROR_OUTPUT_TAG, new OutputEvent(
-                        event.recordKey(), CommonMetadataJson.enrich(event.getJson(), candidate)));
+        // 任意消息都参与事件时间生命周期管理；已到期状态仍完成本条消息的即时路由，随后立即清除。
+        boolean cleanupAfterProcessing = refreshCleanupTimer(event, ctx.timerService());
+        try {
+            if ("common".equals(event.getProtolType())) {
+                CommonMetadata candidate = CommonMetadataJson.extract(event.getJson());
+                if (candidate.isComplete()) {
+                    // 后到的合法 common 会完整覆盖旧状态，但 common 本身不进入正常输出。
+                    metadataState.update(candidate);
+                } else {
+                    // 不完整 common 仅用于错误排查，不能污染当前 key 已存在的合法元数据。
+                    ctx.output(ERROR_OUTPUT_TAG, new OutputEvent(
+                            event.recordKey(), CommonMetadataJson.enrich(event.getJson(), candidate)));
+                }
+                return;
             }
-            return;
-        }
 
-        CommonMetadata metadata = metadataState.value();
-        OutputEvent result = new OutputEvent(event.recordKey(), CommonMetadataJson.enrich(
-                event.getJson(), metadata == null ? new CommonMetadata() : metadata));
-        if (metadata == null) {
-            // 没有 common 状态时仍补齐字段结构，但六个值均为 JSON null，并路由到错误流。
-            ctx.output(ERROR_OUTPUT_TAG, result);
-        } else {
-            // 只有成功读取完整 common 状态的非 common 事件才进入正常输出。
-            out.collect(result);
+            CommonMetadata metadata = metadataState.value();
+            OutputEvent result = new OutputEvent(event.recordKey(), CommonMetadataJson.enrich(
+                    event.getJson(), metadata == null ? new CommonMetadata() : metadata));
+            if (metadata == null) {
+                // 没有 common 状态时仍补齐字段结构，但六个值均为 JSON null，并路由到错误流。
+                ctx.output(ERROR_OUTPUT_TAG, result);
+            } else {
+                // 只有成功读取完整 common 状态的非 common 事件才进入正常输出。
+                out.collect(result);
+            }
+        } finally {
+            if (cleanupAfterProcessing) {
+                metadataState.clear();
+            }
         }
     }
 
@@ -98,12 +105,25 @@ public class CommonStateEnrichmentFunction extends KeyedProcessFunction<String, 
      *
      * <p>先基于事件的 {@code event timestamp} 计算 30 秒后的候选截止值；只有当前 key 尚未注册定时器，
      * 或候选截止值比已保存的截止值更晚时，才删除旧事件时间定时器、注册新定时器并更新状态。
-     * 相同时间或乱序事件保留原截止值，因此清理边界只会单调推进。{@link Math#addExact(long, long)}
-     * 在读取和改变状态之前校验加法溢出，避免注册错误的过去时间或在失败时产生业务输出。</p>
+     * 相同时间或乱序事件保留原截止值，因此清理边界只会单调推进。如果候选值与已有截止值中的较晚者
+     * 已经小于或等于当前 watermark，则删除已有的过去定时器并清空截止值状态，返回 {@code true}
+     * 通知调用方在完成本条消息的即时业务路由后清除元数据。这样不会依赖 Flink 对过去事件时间定时器
+     * 的下一次 watermark 回调，也不会因为单条迟到消息删除截止值仍在未来的已有状态。
+     * {@link Math#addExact(long, long)} 在读取和改变状态之前校验加法溢出，避免在失败时产生状态或输出。</p>
+     *
+     * @return 本条消息完成即时业务路由后是否必须清除元数据状态
      */
-    private void refreshCleanupTimer(EventRecord event, TimerService timerService) throws Exception {
+    private boolean refreshCleanupTimer(EventRecord event, TimerService timerService) throws Exception {
         long candidate = Math.addExact(event.getEventTimestamp(), EventTimePolicy.STATE_CLEANUP_DELAY_MILLIS);
         Long previous = cleanupTimerState.value();
+        long finalDeadline = previous == null ? candidate : Math.max(previous, candidate);
+        if (finalDeadline <= timerService.currentWatermark()) {
+            if (previous != null) {
+                timerService.deleteEventTimeTimer(previous);
+            }
+            cleanupTimerState.clear();
+            return true;
+        }
         if (previous == null || candidate > previous) {
             if (previous != null) {
                 timerService.deleteEventTimeTimer(previous);
@@ -111,6 +131,7 @@ public class CommonStateEnrichmentFunction extends KeyedProcessFunction<String, 
             timerService.registerEventTimeTimer(candidate);
             cleanupTimerState.update(candidate);
         }
+        return false;
     }
 
     /**

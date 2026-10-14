@@ -3,7 +3,11 @@ package com.example.flinkprocesser;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,21 +66,19 @@ class EventRecordParserTest {
 
     @ParameterizedTest
     @ValueSource(strings = {
-            "not-json", "{}", "[]", "null",
-            "{\"start_id\":1791614142000,\"protol_type\":\"start\"}",
-            "{\"udid\":\"device-1\",\"protol_type\":\"start\"}",
-            "{\"udid\":\"device-1\",\"start_id\":1791614142000}",
-            "{\"udid\":\"\",\"start_id\":1791614142000,\"protol_type\":\"start\"}",
-            "{\"udid\":null,\"start_id\":1791614142000,\"protol_type\":\"start\"}",
-            "{\"udid\":42,\"start_id\":1791614142000,\"protol_type\":\"start\"}",
-            "{\"udid\":\"device-1\",\"start_id\":\"1791614142000\",\"protol_type\":\"start\"}",
-            "{\"udid\":\"device-1\",\"start_id\":1.5,\"protol_type\":\"start\"}",
-            "{\"udid\":\"device-1\",\"start_id\":9223372036854775808,\"protol_type\":\"start\"}",
-            "{\"udid\":\"device-1\",\"start_id\":1791614142000,\"protol_type\":\"  \"}",
-            "{\"udid\":\"device-1\",\"start_id\":1791614142000,\"protol_type\":true}"
+            "not-json", "{}", "[]", "null"
     })
-    void rejectsInvalidJsonOrMissingTypedBusinessFields(String json) {
+    void rejectsInvalidJsonOrNonObjectRoots(String json) {
         assertThatThrownBy(() -> parser.map(json)).isInstanceOf(Exception.class);
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidBusinessFields")
+    void rejectsInvalidTypedBusinessFieldWithoutBeingMaskedByTimestamp(
+            String json, String expectedField) {
+        assertThatThrownBy(() -> parser.parseAt(json, 1_791_614_142_000L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(expectedField);
     }
 
     @ParameterizedTest
@@ -93,9 +95,45 @@ class EventRecordParserTest {
     @Test
     void rejectsTrailingContentAfterAnEvent() {
         String json = """
-                {"udid":"device-1","start_id":1791614142000,"protol_type":"start"} {}
+                {"udid":"device-1","start_id":1791614142000,"protol_type":"start",
+                 "event_timestamp":1791614142000} {}
                 """;
-        assertThatThrownBy(() -> parser.map(json)).isInstanceOf(Exception.class);
+        assertThatThrownBy(() -> parser.parseAt(json, 1_791_614_142_000L))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("Trailing token");
+    }
+
+    private static Stream<Arguments> invalidBusinessFields() {
+        return Stream.of(
+                Arguments.of("""
+                        {"start_id":1791614142000,"protol_type":"start",
+                         "event_timestamp":1791614142000}
+                        """, "udid"),
+                Arguments.of("""
+                        {"udid":"device-1","protol_type":"start",
+                         "event_timestamp":1791614142000}
+                        """, "start_id"),
+                Arguments.of("""
+                        {"udid":"device-1","start_id":1791614142000,
+                         "event_timestamp":1791614142000}
+                        """, "protol_type"),
+                Arguments.of(eventWithBusinessFields("\"\"", "1791614142000", "\"start\""), "udid"),
+                Arguments.of(eventWithBusinessFields("null", "1791614142000", "\"start\""), "udid"),
+                Arguments.of(eventWithBusinessFields("42", "1791614142000", "\"start\""), "udid"),
+                Arguments.of(eventWithBusinessFields("\"device-1\"", "\"1791614142000\"", "\"start\""),
+                        "start_id"),
+                Arguments.of(eventWithBusinessFields("\"device-1\"", "1.5", "\"start\""), "start_id"),
+                Arguments.of(eventWithBusinessFields(
+                        "\"device-1\"", "9223372036854775808", "\"start\""), "start_id"),
+                Arguments.of(eventWithBusinessFields("\"device-1\"", "1791614142000", "\"  \""),
+                        "protol_type"),
+                Arguments.of(eventWithBusinessFields("\"device-1\"", "1791614142000", "true"),
+                        "protol_type"));
+    }
+
+    private static String eventWithBusinessFields(String udid, String startId, String protolType) {
+        return "{\"udid\":" + udid + ",\"start_id\":" + startId + ",\"protol_type\":"
+                + protolType + ",\"event_timestamp\":1791614142000}";
     }
 
     private static String eventJson(long eventTimestamp) {

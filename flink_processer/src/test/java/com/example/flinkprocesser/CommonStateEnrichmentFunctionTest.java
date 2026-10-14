@@ -228,6 +228,50 @@ class CommonStateEnrichmentFunctionTest {
         assertThat(errorOutput()).isEmpty();
     }
 
+    // 抓住候选截止值已经落后于或等于当前 watermark 时，过去 timer 和 common 状态仍被保留。
+    @ParameterizedTest
+    @ValueSource(longs = {31_000L, 31_001L})
+    void commonWhoseCleanupDeadlineHasPassedDoesNotRetainState(long watermark) throws Exception {
+        harness.processWatermark(new Watermark(watermark));
+
+        harness.processElement(common("device-1", 1L, 1_000L), 1_000L);
+
+        assertThat(mainOutput()).isEmpty();
+        assertThat(errorOutput()).isEmpty();
+        assertThat(harness.numEventTimeTimers()).isZero();
+        assertThat(harness.numKeyedStateEntries()).isZero();
+    }
+
+    // 抓住迟到完整 common 在本条消息结束后仍可被紧随其后的当前非 common 使用。
+    @Test
+    void expiredLateCommonCannotEnrichFollowingCurrentNonCommon() throws Exception {
+        harness.processWatermark(new Watermark(100_000L));
+        harness.processElement(common("device-1", 1L, 1_000L), 1_000L);
+
+        harness.processElement(nonCommon("device-1", 1L, "app", 100_000L), 100_000L);
+
+        assertThat(mainOutput()).isEmpty();
+        assertThat(errorOutput()).hasSize(1);
+        assertNullMetadata(errorOutput().get(0), "device-1_1", "app");
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numKeyedStateEntries()).isEqualTo(1);
+    }
+
+    // 抓住迟到消息的候选截止值已过 watermark 时，误删仍有未来截止值的既有 common 状态。
+    @Test
+    void lateEventPreservesExistingStateWhoseDeadlineIsStillInTheFuture() throws Exception {
+        harness.processElement(common("device-1", 1L, 100_000L), 100_000L);
+        harness.processWatermark(new Watermark(110_000L));
+
+        harness.processElement(nonCommon("device-1", 1L, "app", 1_000L), 1_000L);
+
+        assertThat(mainOutput()).hasSize(1);
+        assertThat(errorOutput()).isEmpty();
+        assertCompleteMetadata(mainOutput().get(0), "device-1_1", "app");
+        assertThat(harness.numEventTimeTimers()).isEqualTo(1);
+        assertThat(harness.numKeyedStateEntries()).isEqualTo(2);
+    }
+
     // 抓住用普通加法把清理时间溢出为过去值并继续产生业务输出。
     @Test
     void failsOnCleanupTimestampOverflowWithoutRegisteringTimer() throws Exception {

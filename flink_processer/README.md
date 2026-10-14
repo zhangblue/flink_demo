@@ -76,6 +76,13 @@ flink run --detached \
   flink_processer/target/flink-processer-1.0.0.jar
 ```
 
+该恢复命令只承诺兼容由当前事件时间实现产生的 checkpoint/savepoint。首次从上一版处理时间实现升级时，
+即使算子 UID 和状态名称相同，也不能直接恢复旧 checkpoint/savepoint：两版 timer domain 和清理状态语义
+不同，匹配到相同 UID 后旧 timer 不保证能按新语义恢复。首次升级应从无状态作业启动，或明确放弃上一版
+状态。`--allowNonRestoredState` 只允许跳过无法匹配的算子状态，不能修复已经匹配 UID 的旧 timer，因此不能
+用它绕过这项升级限制。升级到本事件时间版本之后，才可按上面的 `-s .../_metadata` 命令恢复本版本生成的
+checkpoint/savepoint。
+
 该 source 与两个 Kafka sink 都是至少一次语义。失败恢复可能重放 checkpoint 之后已处理或已写出的记录，造成 Kafka 输出重复；`event_id` 可供下游幂等去重，不能据此认为端到端精确一次。
 
 ## 输入字段
