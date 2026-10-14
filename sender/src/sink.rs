@@ -360,8 +360,9 @@ mod tests {
 
         let speed_count = Arc::new(AtomicU64::new(0));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let reporter = tokio::spawn(report_delivery_speed(speed_count.clone(), shutdown_rx));
-        tokio::task::yield_now().await;
+        let mut reporter_future = Box::pin(report_delivery_speed(speed_count.clone(), shutdown_rx));
+        assert!(futures::poll!(reporter_future.as_mut()).is_pending());
+        let reporter = tokio::spawn(reporter_future);
         speed_count.fetch_add(3, Ordering::Relaxed);
 
         tokio::time::advance(Duration::from_millis(999)).await;
