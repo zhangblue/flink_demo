@@ -44,8 +44,8 @@ public final class EventEnrichmentJob {
                 .setBootstrapServers(config.bootstrapServers())
                 .setTopics(config.inputTopic())
                 .setGroupId(config.groupId())
-                // 优先恢复消费组已提交位置；新消费组从最早 offset 开始，避免漏掉历史数据。
-                .setStartingOffsets(OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST))
+                // 快照状态优先；无可恢复状态时读取 committed offset，缺失时回退到最新位置。
+                .setStartingOffsets(OffsetsInitializer.committedOffsets(OffsetResetStrategy.LATEST))
                 .setDeserializer(new EventRecordKafkaDeserializer())
                 .build();
 

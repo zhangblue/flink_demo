@@ -56,7 +56,7 @@ flink run --detached \
 | `--checkpoint-storage-uri` | `file:///home/zhangdi/workspace/flink_data/checkpoints` | Checkpoint 本地存储目录，必须是绝对 `file:` URI |
 | `--savepoint-storage-uri` | `file:///home/zhangdi/workspace/flink_data/savepoints` | Savepoint 本地存储目录，必须是绝对 `file:` URI |
 
-字符串参数不能留空，三个 topic 不能相同。新消费任务默认优先从 consumer group 已提交的 offset 开始；没有已提交 offset 时从最早位置开始。恢复 checkpoint/savepoint 时，恢复状态中记录的 Kafka source offset 优先，consumer group 已提交 offset 和此初始 offset 策略只用于没有可恢复 source 状态的新启动。新作业处理算子的 UID 为 `common-state-enrichment`，与旧窗口算子的 UID 不同；旧 savepoint 中的窗口状态不能迁移到新算子。升级时应从新部署启动，或在确认旧状态可以丢弃后使用 Flink 的未恢复状态选项。
+字符串参数不能留空，三个 topic 不能相同。新作业优先使用 consumer group 已提交的 offset；某分区没有有效 committed offset 时从该分区最新位置开始。从 checkpoint/savepoint 恢复时，快照中的 Kafka source offset 优先于 consumer group 和该回退策略。新作业处理算子的 UID 为 `common-state-enrichment`，与旧窗口算子的 UID 不同；旧 savepoint 中的窗口状态不能迁移到新算子。升级时应从新部署启动，或在确认旧状态可以丢弃后使用 Flink 的未恢复状态选项。
 
 ## 事件时间与状态清理
 

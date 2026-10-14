@@ -1,5 +1,6 @@
 package com.example.flinkprocesser;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -9,6 +10,8 @@ import org.apache.flink.api.common.eventtime.WatermarkOutput;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
+import org.apache.flink.connector.kafka.source.KafkaSource;
+import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ExternalizedCheckpointRetention;
@@ -21,11 +24,31 @@ import org.apache.flink.streaming.api.transformations.SinkTransformation;
 import org.apache.flink.streaming.api.transformations.SourceTransformation;
 import org.apache.flink.util.clock.ManualClock;
 import org.apache.flink.util.clock.RelativeClock;
+import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class EventEnrichmentJobTest {
+    @Test
+    void sourceUsesCommittedOffsetsWithLatestFallback() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        EventEnrichmentJob.buildPipeline(env,
+                new JobConfig("localhost:9092", "input", "output", "errors", "test-group", 1, 1500L,
+                        "file:///tmp/checkpoints", "file:///tmp/savepoints"));
+        SourceTransformation<?, ?, ?> source = (SourceTransformation<?, ?, ?>) env.getTransformations().stream()
+                .flatMap(transformation -> transformation.getTransitivePredecessors().stream())
+                .filter(transformation -> "kafka-source".equals(transformation.getUid()))
+                .findFirst().orElseThrow();
+        KafkaSource<?> kafkaSource = (KafkaSource<?>) source.getSource();
+        Field field = KafkaSource.class.getDeclaredField("startingOffsetsInitializer");
+        field.setAccessible(true);
+        OffsetsInitializer initializer = (OffsetsInitializer) field.get(kafkaSource);
+
+        assertThat(initializer.getAutoOffsetResetStrategy())
+                .isEqualTo(OffsetResetStrategy.LATEST);
+    }
+
     // 捕获未配置持久化目录或取消作业时删除 checkpoint 的回归。
     @Test
     void configuresPersistentDefaultDirectories() {
