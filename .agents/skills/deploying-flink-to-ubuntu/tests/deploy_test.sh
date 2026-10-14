@@ -21,12 +21,23 @@ setup() {
   : > "$CALL_LOG"
   export FAKE_JOBS=one FAKE_CHECKSUM=ok FAKE_NEW_STATE=RUNNING FAKE_METADATA=ok FAKE_BUILD=ok FAKE_JAR=ok FAKE_POLL=ok
   export FAKE_STOP_URI="$RESTORE" FAKE_SUBMIT_ID="$NEW" FAKE_OLD_ID="$OLD" FAKE_SHA=abcdef123456 FAKE_SCP=ok FAKE_STOP=ok FAKE_MOVE=ok FAKE_SUBMIT=ok FAKE_CANCEL=ok FAKE_PREFLIGHT=ok
-  export FAKE_DIRTY=clean FAKE_EXISTING=absent FAKE_OLD_POLL=gone FAKE_OTHER_JOB=no FAKE_HEAD_CHANGE=no
+  export FAKE_DIRTY=clean FAKE_EXISTING=absent FAKE_OLD_POLL=gone FAKE_OTHER_JOB=no FAKE_HEAD_CHANGE=no FAKE_PRE_OTHER_STATE=none
   cat > "$CASE/bin/dispatch" <<'FAKE'
 #!/bin/bash
 set -eu
 name=${0##*/}
 printf '%s %s\n' "$name" "$*" >> "$CALL_LOG"
+# CLI filters CREATED/INITIALIZING into Scheduled Jobs. Do not let a fake
+# unfiltered response hide an omitted --scheduled flag in the real script.
+add_job() {
+  local id=$1 state=$2 job=${3:-mobile-event-common-enrichment} row
+  printf -v row '14.10.2026 10:00:00 : %s : %s (%s)' "$id" "$job" "$state"
+  case "$state" in
+    CREATED|INITIALIZING) scheduled_listing+="$row"$'\n' ;;
+    FAILED|FINISHED|CANCELED) : ;;
+    *) running_listing+="$row"$'\n' ;;
+  esac
+}
 case "$name" in
   mvn)
     [[ "$FAKE_BUILD" == ok ]] || exit 1
@@ -51,7 +62,14 @@ case "$name" in
   ssh)
     remote=${@: -1}
     case "$remote" in
-      *'flink list --running'*)
+      *'flink list'*)
+        show_running=false show_scheduled=false
+        case "${remote##*; }" in
+          'flink list --running') show_running=true ;;
+          'flink list --scheduled') show_scheduled=true ;;
+          'flink list'|'flink list --running --scheduled') show_running=true; show_scheduled=true ;;
+          *) printf 'Unsupported fake list arguments: %s\n' "$remote" >&2; exit 93 ;;
+        esac
         if [[ -f "$FAKE_STATE" && "$FAKE_POLL" == hang ]]; then
           trap 'exit 143' TERM
           # A broken production timeout must still let the test suite terminate.
@@ -59,28 +77,45 @@ case "$name" in
           while (( SECONDS < deadline )); do :; done
           exit 1
         fi
-        printf '%s\n' 'Waiting for response...' '------------------ Running/Restarting Jobs -------------------'
+        running_listing="" scheduled_listing=""
         if [[ -f "$FAKE_STATE" ]]; then
           count=0
           if [[ -f "$FAKE_STATE.poll" ]]; then count=$(cat "$FAKE_STATE.poll"); fi
           count=$((count + 1)); printf '%s\n' "$count" > "$FAKE_STATE.poll"
-          if [[ "$FAKE_NEW_STATE" == RUNNING || "$FAKE_NEW_STATE" == RESTARTING ]]; then
-            printf '14.10.2026 10:00:00 : 22222222222222222222222222222222 : mobile-event-common-enrichment (%s)\n' "$FAKE_NEW_STATE"
-          fi
+          add_job 22222222222222222222222222222222 "$FAKE_NEW_STATE"
           if [[ "$FAKE_OLD_POLL" == persistent || ( "$FAKE_OLD_POLL" == delayed && "$count" -le 2 ) ]]; then
-            printf '14.10.2026 10:00:00 : 11111111111111111111111111111111 : mobile-event-common-enrichment (RUNNING)\n'
+            add_job 11111111111111111111111111111111 RUNNING
           elif [[ "$FAKE_OLD_POLL" == restarting ]]; then
-            printf '14.10.2026 10:00:00 : 11111111111111111111111111111111 : mobile-event-common-enrichment (RESTARTING)\n'
+            add_job 11111111111111111111111111111111 RESTARTING
+          elif [[ "$FAKE_OLD_POLL" == INITIALIZING || "$FAKE_OLD_POLL" == CREATED ]]; then
+            add_job 11111111111111111111111111111111 "$FAKE_OLD_POLL"
           fi
-          if [[ "$FAKE_OTHER_JOB" == yes ]]; then printf '14.10.2026 10:00:00 : 33333333333333333333333333333333 : mobile-event-common-enrichment (RESTARTING)\n'; fi
+          if [[ "$FAKE_OTHER_JOB" == yes ]]; then
+            add_job 33333333333333333333333333333333 RESTARTING
+          elif [[ "$FAKE_OTHER_JOB" != no ]]; then
+            add_job 33333333333333333333333333333333 "$FAKE_OTHER_JOB"
+          fi
         else
           case "$FAKE_JOBS" in
-            one|two|mixed) printf '14.10.2026 10:00:00 : %s : mobile-event-common-enrichment (RUNNING)\n' "$FAKE_OLD_ID" ;;
-            restarting) printf '14.10.2026 10:00:00 : %s : mobile-event-common-enrichment (RESTARTING)\n' "$FAKE_OLD_ID" ;;
-            unrelated) printf '14.10.2026 10:00:00 : 33333333333333333333333333333333 : mobile-event-common-enrichment-other (RUNNING)\n' ;;
+            one|two|mixed) add_job "$FAKE_OLD_ID" RUNNING ;;
+            restarting) add_job "$FAKE_OLD_ID" RESTARTING ;;
+            INITIALIZING|CREATED|SUSPENDED) add_job "$FAKE_OLD_ID" "$FAKE_JOBS" ;;
+            unrelated) add_job 33333333333333333333333333333333 RUNNING mobile-event-common-enrichment-other ;;
           esac
-          if [[ "$FAKE_JOBS" == two ]]; then printf '14.10.2026 10:00:00 : 33333333333333333333333333333333 : mobile-event-common-enrichment (RUNNING)\n'; fi
-          if [[ "$FAKE_JOBS" == mixed ]]; then printf '14.10.2026 10:00:00 : 33333333333333333333333333333333 : mobile-event-common-enrichment (RESTARTING)\n'; fi
+          if [[ "$FAKE_JOBS" == two ]]; then add_job 33333333333333333333333333333333 RUNNING; fi
+          if [[ "$FAKE_JOBS" == mixed ]]; then add_job 33333333333333333333333333333333 RESTARTING; fi
+          if [[ "$FAKE_PRE_OTHER_STATE" != none ]]; then add_job 33333333333333333333333333333333 "$FAKE_PRE_OTHER_STATE"; fi
+        fi
+        printf '%s\n' 'Waiting for response...'
+        if [[ "$show_running" == true ]]; then
+          printf '%s\n' '------------------ Running/Restarting Jobs -------------------'
+          printf '%s' "$running_listing"
+          printf '%s\n' '--------------------------------------------------------------'
+        fi
+        if [[ "$show_scheduled" == true ]]; then
+          printf '%s\n' '----------------------- Scheduled Jobs -----------------------'
+          printf '%s' "$scheduled_listing"
+          printf '%s\n' '--------------------------------------------------------------'
         fi ;;
       *'if test -e '*|*'if test -L '*)
         case "$FAKE_EXISTING" in
@@ -218,6 +253,25 @@ test_single_slash_metadata_failure_retains_actual_uri() {
 }
 test_restarting_job_aborts_before_upload() { export FAKE_JOBS=restarting; execute stateless; assert_failed; assert_no_mutation; grep -F RESTARTING "$CASE/output" >/dev/null; }
 test_running_and_restarting_jobs_abort_before_upload() { export FAKE_JOBS=mixed; execute stateless; assert_failed; assert_no_mutation; }
+# These fail if either production observation omits the scheduled filter.
+test_initializing_job_aborts_before_upload() { export FAKE_JOBS=INITIALIZING; execute stateless; assert_failed; assert_no_mutation; grep -Fx 'Old job status (last observed): INITIALIZING' "$CASE/output" >/dev/null; }
+test_created_job_aborts_before_upload() { export FAKE_JOBS=CREATED; execute stateless; assert_failed; assert_no_mutation; grep -Fx 'Old job status (last observed): CREATED' "$CASE/output" >/dev/null; }
+test_running_and_initializing_jobs_abort_before_upload() { export FAKE_PRE_OTHER_STATE=INITIALIZING; execute stateless; assert_failed; assert_no_mutation; }
+test_running_and_created_jobs_abort_before_upload() { export FAKE_PRE_OTHER_STATE=CREATED; execute stateless; assert_failed; assert_no_mutation; }
+test_other_initializing_job_cannot_report_success() {
+  export FAKE_OTHER_JOB=INITIALIZING; execute stateless; assert_failed
+  [[ $(grep -c 'flink list --running' "$CALL_LOG") == 31 ]]
+  grep -Fx 'Old job status (last observed): not active' "$CASE/output" >/dev/null
+}
+test_other_created_job_cannot_report_success() {
+  export FAKE_OTHER_JOB=CREATED; execute stateless; assert_failed
+  [[ $(grep -c 'flink list --running' "$CALL_LOG") == 31 ]]
+  grep -Fx 'Old job status (last observed): not active' "$CASE/output" >/dev/null
+}
+test_old_job_initializing_cannot_report_success() { export FAKE_OLD_POLL=INITIALIZING; execute stateless; assert_failed; grep -Fx 'Old job status (last observed): INITIALIZING' "$CASE/output" >/dev/null; }
+test_old_job_created_cannot_report_success() { export FAKE_OLD_POLL=CREATED; execute stateless; assert_failed; grep -Fx 'Old job status (last observed): CREATED' "$CASE/output" >/dev/null; }
+test_suspended_job_aborts_before_upload() { export FAKE_JOBS=SUSPENDED; execute stateless; assert_failed; assert_no_mutation; grep -Fx 'Old job status (last observed): SUSPENDED' "$CASE/output" >/dev/null; }
+test_other_suspended_job_cannot_report_success() { export FAKE_OTHER_JOB=SUSPENDED; execute stateless; assert_failed; }
 test_old_job_still_running_cannot_report_success() {
   export FAKE_OLD_POLL=persistent; execute stateless; assert_failed
   [[ $(grep -c 'flink list --running' "$CALL_LOG") == 31 ]]

@@ -102,7 +102,7 @@ remote() { (remote_exec "$1"); }
 poll_running_jobs() {
   local deadline=$1 output pid status=0
   output=$(mktemp) || return 1
-  (remote_exec 'flink list --running') > "$output" &
+  (remote_exec 'flink list --running --scheduled') > "$output" &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     if (( SECONDS >= deadline )); then
@@ -125,7 +125,7 @@ matching_jobs() {
     {gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $2)}
     index($3, job " (") == 1 && $3 ~ /\([A-Z]+\)$/ {
       state=substr($3, length(job)+3); sub(/\)$/, "", state)
-      if (state != "FINISHED" && state != "FAILED" && state != "CANCELED" && state != "SUSPENDED")
+      if (state != "FINISHED" && state != "FAILED" && state != "CANCELED")
         print ($2 == "" ? "invalid-empty-job-id" : $2), state
     }
   '
@@ -135,7 +135,7 @@ read_running_jobs() {
   STAGE="remote read-only preflight"
   remote "test -x $REMOTE_JAVA_HOME/bin/java && test -x $REMOTE_FLINK_HOME/bin/flink && test -d $REMOTE_DATA_DIR && test -w $REMOTE_DATA_DIR && java -version && flink --version" || fail 'remote environment preflight failed'
   local listing id state jobs
-  listing=$(remote 'flink list --running') || fail 'cannot read running jobs'
+  listing=$(remote 'flink list --running --scheduled') || fail 'cannot read active jobs'
   jobs=$(matching_jobs <<< "$listing")
   while read -r id state; do
     [[ -n "$id" ]] || continue
