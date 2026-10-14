@@ -19,7 +19,7 @@ setup() {
   if [[ -f "$SOURCE" ]]; then cp "$SOURCE" "$CASE/repo/.agents/skills/deploying-flink-to-ubuntu/scripts/deploy.sh"; fi
   export CALL_LOG="$CASE/calls" FAKE_STATE="$CASE/state"
   : > "$CALL_LOG"
-  export FAKE_JOBS=one FAKE_CHECKSUM=ok FAKE_NEW_STATE=RUNNING FAKE_METADATA=ok FAKE_BUILD=ok FAKE_JAR=ok FAKE_POLL=ok
+  export FAKE_JOBS=one FAKE_TEMP_CHECKSUM=ok FAKE_FINAL_CHECKSUM=ok FAKE_NEW_STATE=RUNNING FAKE_METADATA=ok FAKE_BUILD=ok FAKE_JAR=ok FAKE_POLL=ok
   export FAKE_STOP_URI="$RESTORE" FAKE_SUBMIT_ID="$NEW" FAKE_OLD_ID="$OLD" FAKE_SHA=abcdef123456 FAKE_SCP=ok FAKE_STOP=ok FAKE_MOVE=ok FAKE_SUBMIT=ok FAKE_CANCEL=ok FAKE_PREFLIGHT=ok
   export FAKE_DIRTY=clean FAKE_EXISTING=absent FAKE_OLD_POLL=gone FAKE_OTHER_JOB=no FAKE_HEAD_CHANGE=no FAKE_PRE_OTHER_STATE=none
   cat > "$CASE/bin/dispatch" <<'FAKE'
@@ -124,8 +124,24 @@ case "$name" in
           different) printf '%064d  existing\n' 1 ;;
           error) exit 1 ;;
         esac ;;
+      *'sha256sum /home/zhangdi/workspace/flink_data/.flink-processer-'*)
+        if [[ "$FAKE_TEMP_CHECKSUM" == error ]]; then
+          exit 1
+        elif [[ "$FAKE_TEMP_CHECKSUM" == ok ]]; then
+          printf '%064d  upload\n' 0
+        else
+          printf '%064d  upload\n' 1
+        fi ;;
+      *'sha256sum /home/zhangdi/workspace/flink_data/flink-processer-'*)
+        if [[ "$FAKE_FINAL_CHECKSUM" == error ]]; then
+          exit 1
+        elif [[ "$FAKE_FINAL_CHECKSUM" == ok ]]; then
+          printf '%064d  installed\n' 0
+        else
+          printf '%064d  installed\n' 1
+        fi ;;
       *'sha256sum '*)
-        if [[ "$FAKE_CHECKSUM" == ok ]]; then printf '%064d  upload\n' 0; else printf '%064d  upload\n' 1; fi ;;
+        if [[ "$FAKE_TEMP_CHECKSUM" == ok ]]; then printf '%064d  upload\n' 0; else printf '%064d  upload\n' 1; fi ;;
       *'flink stop '*)
         [[ "$FAKE_STOP" == ok ]] || exit 1
         printf 'Savepoint completed. Path: %s\n' "$FAKE_STOP_URI" ;;
@@ -147,7 +163,7 @@ FAKE
   local tool
   for tool in mvn jar git shasum ssh scp sleep; do ln -s dispatch "$CASE/bin/$tool"; done
   # Only explicitly allowed local utilities are reachable via PATH.
-  for tool in bash dirname grep sed awk head tail tr wc mkdir rm cat mktemp; do
+  for tool in bash dirname grep sed awk head tail tr wc mkdir rm cat mktemp cut; do
     ln -s "$(command -v "$tool")" "$CASE/bin/$tool"
   done
 }
@@ -171,6 +187,19 @@ assert_before() {
   right=$(grep -nF -- "$2" "$CALL_LOG" | head -1 | cut -d: -f1)
   [[ -n "$left" && -n "$right" && "$left" -lt "$right" ]] || { cat "$CALL_LOG"; return 1; }
 }
+assert_last_before() {
+  local left right
+  left=$(grep -nF -- "$1" "$CALL_LOG" | tail -1 | cut -d: -f1)
+  right=$(grep -nF -- "$2" "$CALL_LOG" | head -1 | cut -d: -f1)
+  [[ -n "$left" && -n "$right" && "$left" -lt "$right" ]] || { cat "$CALL_LOG"; return 1; }
+}
+
+assert_before_last() {
+  local left right
+  left=$(grep -nF -- "$1" "$CALL_LOG" | head -1 | cut -d: -f1)
+  right=$(grep -nF -- "$2" "$CALL_LOG" | tail -1 | cut -d: -f1)
+  [[ -n "$left" && -n "$right" && "$left" -lt "$right" ]] || { cat "$CALL_LOG"; return 1; }
+}
 execute() { run_deploy --execute --confirmed --restore-mode "$@"; }
 
 # Each scenario catches a concrete unsafe command, missing gate, or wrong branch.
@@ -184,17 +213,22 @@ test_savepoint_mode_stops_without_drain_and_restores_with_s() {
   assert_log_contains "flink stop --savepointPath $DATA/savepoints $OLD"
   assert_log_not_contains '--drain'
   assert_log_contains "flink run --detached -s $RESTORE -c com.example.flinkprocesser.EventEnrichmentJob $DATA/flink-processer-abcdef123456.jar"
-  assert_before 'sha256sum ' 'ln '; assert_before 'ln ' 'flink stop '; assert_before 'flink stop ' 'flink run '
+  assert_before_last 'mv -f ' "sha256sum $DATA/flink-processer-abcdef123456.jar"
+  assert_last_before "sha256sum $DATA/flink-processer-abcdef123456.jar" 'flink stop '
+  assert_before 'flink stop ' 'flink run '
 }
 test_stateless_mode_cancels_and_submits_without_s() {
   execute stateless; assert_ok; assert_log_contains "flink cancel $OLD"; assert_log_not_contains ' -s '
-  assert_log_not_contains '_metadata'; assert_log_not_contains 'flink stop '; assert_before 'ln ' 'flink cancel '; assert_before 'flink cancel ' 'flink run '
+  assert_log_not_contains '_metadata'; assert_log_not_contains 'flink stop '
+  assert_before_last 'mv -f ' "sha256sum $DATA/flink-processer-abcdef123456.jar"
+  assert_last_before "sha256sum $DATA/flink-processer-abcdef123456.jar" 'flink cancel '
+  assert_before 'flink cancel ' 'flink run '
   assert_log_contains '--bootstrap-servers 192.168.250.106:9092 --input-topic flink_demo --output-topic flink_output --error-topic flink_error --group-id flink-processer --parallelism 1 --checkpoint-interval-ms 60000'
   assert_log_contains "--checkpoint-storage-uri file://$DATA/checkpoints --savepoint-storage-uri file://$DATA/savepoints"
   assert_log_contains 'export JAVA_HOME=/home/zhangdi/works/jdk-21.0.12.1+1; export PATH=/home/zhangdi/works/flink-2.3.0/bin:/home/zhangdi/works/jdk-21.0.12.1+1/bin:"$PATH"'
 }
 test_checksum_mismatch_keeps_old_job_running() {
-  export FAKE_CHECKSUM=bad; execute stateless; assert_failed
+  export FAKE_TEMP_CHECKSUM=bad; execute stateless; assert_failed
   assert_log_contains 'scp '; assert_log_contains "rm -f $DATA/.flink-processer-abcdef123456-"
   assert_log_not_contains 'mv '; assert_log_not_contains 'ln '; assert_log_not_contains 'flink cancel '; assert_log_not_contains 'flink stop '; assert_log_not_contains 'flink run '
 }
@@ -289,10 +323,74 @@ test_existing_identical_version_is_reused_without_upload_or_overwrite() {
   export FAKE_EXISTING=same; execute stateless; assert_ok
   assert_log_contains "sha256sum $DATA/flink-processer-abcdef123456.jar"
   assert_log_not_contains 'scp '; assert_log_not_contains 'mv '; assert_log_not_contains 'ln '
+  [[ $(grep -c "sha256sum $DATA/flink-processer-abcdef123456.jar" "$CALL_LOG") == 1 ]]
 }
-test_existing_conflicting_version_aborts_before_stopping_old_job() { export FAKE_EXISTING=different; execute stateless; assert_failed; assert_no_mutation; }
+test_existing_conflicting_version_is_atomically_overwritten_before_old_job_stops() {
+  export FAKE_EXISTING=different
+  execute stateless; assert_ok
+  assert_log_contains "scp -o BatchMode=yes -o ConnectTimeout=10"
+  assert_log_contains "mv -f $DATA/.flink-processer-abcdef123456-"
+  assert_log_contains "sha256sum $DATA/flink-processer-abcdef123456.jar"
+  assert_log_not_contains 'ln '
+  assert_before 'scp ' "sha256sum $DATA/.flink-processer-abcdef123456-"
+  assert_before "sha256sum $DATA/.flink-processer-abcdef123456-" 'mv -f '
+  assert_before_last 'mv -f ' "sha256sum $DATA/flink-processer-abcdef123456.jar"
+  [[ $(grep -c "sha256sum $DATA/flink-processer-abcdef123456.jar" "$CALL_LOG") == 2 ]]
+  assert_last_before "sha256sum $DATA/flink-processer-abcdef123456.jar" "flink cancel $OLD"
+}
 test_existing_version_checksum_read_failure_aborts_before_stopping() { export FAKE_EXISTING=error; execute stateless; assert_failed; assert_no_mutation; }
-test_version_install_never_overwrites_existing_artifact() { execute stateless; assert_ok; assert_log_contains "ln -T $DATA/.flink-processer-abcdef123456-"; assert_log_not_contains 'mv '; }
+test_absent_version_is_atomically_installed_and_verified() {
+  execute stateless; assert_ok
+  assert_log_contains "mv -f $DATA/.flink-processer-abcdef123456-"
+  assert_log_contains "sha256sum $DATA/flink-processer-abcdef123456.jar"
+  assert_log_not_contains 'ln '
+  assert_before 'scp ' "sha256sum $DATA/.flink-processer-abcdef123456-"
+  assert_before "sha256sum $DATA/.flink-processer-abcdef123456-" 'mv -f '
+  assert_before_last 'mv -f ' "sha256sum $DATA/flink-processer-abcdef123456.jar"
+  [[ $(grep -c "sha256sum $DATA/flink-processer-abcdef123456.jar" "$CALL_LOG") == 2 ]]
+  assert_last_before "sha256sum $DATA/flink-processer-abcdef123456.jar" "flink cancel $OLD"
+}
+test_overwrite_temp_checksum_failure_keeps_old_job_running() {
+  local checksum
+  for checksum in bad error; do
+    setup "${FUNCNAME[0]}_$checksum"
+    export FAKE_EXISTING=different FAKE_TEMP_CHECKSUM=$checksum
+    execute stateless; assert_failed
+    assert_log_contains 'scp '
+    assert_before 'scp ' "sha256sum $DATA/.flink-processer-abcdef123456-"
+    assert_log_contains "rm -f $DATA/.flink-processer-abcdef123456-"
+    assert_log_not_contains 'mv -f '
+    assert_log_not_contains 'flink cancel '
+    assert_log_not_contains 'flink stop '
+    assert_log_not_contains 'flink run '
+  done
+}
+test_overwrite_move_failure_keeps_old_job_running() {
+  export FAKE_EXISTING=different FAKE_MOVE=bad
+  execute stateless; assert_failed
+  assert_log_contains 'scp '
+  assert_log_contains 'mv -f '
+  assert_log_contains "rm -f $DATA/.flink-processer-abcdef123456-"
+  assert_log_not_contains 'flink cancel '
+  assert_log_not_contains 'flink stop '
+  assert_log_not_contains 'flink run '
+}
+test_final_checksum_mismatch_keeps_old_job_running() {
+  export FAKE_EXISTING=different FAKE_FINAL_CHECKSUM=bad
+  execute stateless; assert_failed
+  assert_log_contains 'mv -f '
+  assert_log_not_contains 'flink cancel '
+  assert_log_not_contains 'flink stop '
+  assert_log_not_contains 'flink run '
+}
+test_final_checksum_read_failure_keeps_old_job_running() {
+  export FAKE_EXISTING=different FAKE_FINAL_CHECKSUM=error
+  execute stateless; assert_failed
+  assert_log_contains 'mv -f '
+  assert_log_not_contains 'flink cancel '
+  assert_log_not_contains 'flink stop '
+  assert_log_not_contains 'flink run '
+}
 test_dirty_worktree_aborts_before_build_or_remote() { export FAKE_DIRTY=before; execute stateless; assert_failed; assert_log_not_contains 'mvn '; assert_log_not_contains 'ssh '; assert_no_mutation; }
 test_worktree_changed_during_build_aborts_before_remote() { export FAKE_DIRTY=after; execute stateless; assert_failed; assert_log_contains 'mvn '; assert_log_not_contains 'ssh '; assert_no_mutation; }
 test_revision_changed_during_build_aborts_before_remote() { export FAKE_HEAD_CHANGE=yes; execute stateless; assert_failed; assert_log_contains 'mvn '; assert_log_not_contains 'ssh '; assert_no_mutation; }

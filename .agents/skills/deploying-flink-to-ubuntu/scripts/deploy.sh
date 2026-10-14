@@ -175,6 +175,7 @@ verify_execution_gates() {
 }
 
 cleanup_temp_upload() {
+  [[ -n "$TEMP_JAR" ]] || return 0
   remote "rm -f $TEMP_JAR" || printf 'Temporary upload cleanup failed: %s\n' "$TEMP_JAR" >&2
 }
 
@@ -190,9 +191,12 @@ upload_and_verify() {
   existing=$(remote "if test -e $VERSIONED_JAR || test -L $VERSIONED_JAR; then sha256sum $VERSIONED_JAR; else printf 'absent\\n'; fi") || fail 'cannot inspect existing versioned JAR'
   if [[ "$existing" != absent ]]; then
     remote_hash=${existing%% *}
-    [[ "$remote_hash" =~ ^[0-9a-f]{64}$ && "$remote_hash" == "$local_hash" ]] || fail 'existing versioned JAR SHA-256 differs; old job was not stopped'
-    printf 'Reusing verified versioned JAR: %s\n' "$VERSIONED_JAR"
-    return 0
+    [[ "$remote_hash" =~ ^[0-9a-f]{64}$ ]] || fail 'invalid existing versioned JAR SHA-256; old job was not stopped'
+    if [[ "$remote_hash" == "$local_hash" ]]; then
+      printf 'Reusing verified versioned JAR: %s\n' "$VERSIONED_JAR"
+      return 0
+    fi
+    printf 'Existing versioned JAR differs and will be atomically replaced: %s\n' "$VERSIONED_JAR"
   fi
   if ! scp -o BatchMode=yes -o ConnectTimeout=10 "$LOCAL_JAR" "$SSH_HOST:$TEMP_JAR"; then
     cleanup_temp_upload; fail 'upload failed'
@@ -204,10 +208,20 @@ upload_and_verify() {
   if [[ ! "$remote_hash" =~ ^[0-9a-f]{64}$ || "$remote_hash" != "$local_hash" ]]; then
     cleanup_temp_upload; fail 'upload SHA-256 mismatch; old job was not stopped'
   fi
-  # Same-directory hard link publishes atomically and fails if a concurrent deploy
-  # created this name. It can never replace an artifact retained for rollback.
-  remote "ln -T $TEMP_JAR $VERSIONED_JAR" || { cleanup_temp_upload; fail 'atomic upload installation failed; versioned path was not overwritten'; }
-  cleanup_temp_upload
+  remote "mv -f $TEMP_JAR $VERSIONED_JAR" || {
+    cleanup_temp_upload
+    fail 'atomic JAR replacement failed; old job was not stopped'
+  }
+  TEMP_JAR=''
+
+  if ! remote_result=$(remote "sha256sum $VERSIONED_JAR"); then
+    fail 'final versioned JAR SHA-256 read failed; old job was not stopped'
+  fi
+  remote_hash=${remote_result%% *}
+  if [[ ! "$remote_hash" =~ ^[0-9a-f]{64}$ || "$remote_hash" != "$local_hash" ]]; then
+    fail 'final versioned JAR SHA-256 mismatch; old job was not stopped'
+  fi
+  printf 'Installed and verified versioned JAR: %s\n' "$VERSIONED_JAR"
 }
 
 stop_with_savepoint() {
