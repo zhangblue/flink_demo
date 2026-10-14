@@ -3,7 +3,9 @@ package com.example.flinkprocesser;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import org.apache.flink.api.common.eventtime.Watermark;
 import org.apache.flink.api.common.eventtime.WatermarkGeneratorSupplier;
 import org.apache.flink.api.common.eventtime.WatermarkOutput;
@@ -12,6 +14,7 @@ import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.connector.kafka.source.split.KafkaPartitionSplit;
 import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ExternalizedCheckpointRetention;
@@ -25,6 +28,8 @@ import org.apache.flink.streaming.api.transformations.SourceTransformation;
 import org.apache.flink.util.clock.ManualClock;
 import org.apache.flink.util.clock.RelativeClock;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
+import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
+import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,6 +52,25 @@ class EventEnrichmentJobTest {
 
         assertThat(initializer.getAutoOffsetResetStrategy())
                 .isEqualTo(OffsetResetStrategy.LATEST);
+        TopicPartition partition = new TopicPartition("input", 0);
+        // Supply distinct broker results so latest()/earliest() cannot pass as committed offsets.
+        OffsetsInitializer.PartitionOffsetsRetriever brokerOffsets = new OffsetsInitializer.PartitionOffsetsRetriever() {
+            public Map<TopicPartition, Long> committedOffsets(Collection<TopicPartition> partitions) {
+                return Map.of(partition, 17L);
+            }
+            public Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions) {
+                return Map.of(partition, 42L);
+            }
+            public Map<TopicPartition, Long> beginningOffsets(Collection<TopicPartition> partitions) {
+                return Map.of(partition, 0L);
+            }
+            public Map<TopicPartition, OffsetAndTimestamp> offsetsForTimes(Map<TopicPartition, Long> timestamps) {
+                throw new AssertionError("timestamp offsets are not used by committed initialization");
+            }
+        };
+        assertThat(initializer.getPartitionOffsets(List.of(partition), brokerOffsets))
+                .containsOnlyKeys(partition)
+                .containsEntry(partition, KafkaPartitionSplit.COMMITTED_OFFSET);
     }
 
     // 捕获未配置持久化目录或取消作业时删除 checkpoint 的回归。

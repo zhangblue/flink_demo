@@ -10,9 +10,10 @@ REMOTE_SAVEPOINT_DIR="$REMOTE_DATA_DIR/savepoints"
 JOB_NAME="mobile-event-common-enrichment"
 LOCAL_JAR="flink_processer/target/flink-processer-1.0.0.jar"
 EXECUTE=false CONFIRMED=false RESTORE_MODE="" SAVEPOINT_URI=""
+SAVEPOINT_ACTUAL="" BUILD_REV=""
 OLD_JOB_ID="" NEW_JOB_ID="" OLD_STATUS="not observed"
 VERSIONED_JAR="" TEMP_JAR="" STAGE="arguments"
-RUNNING_IDS=()
+ACTIVE_IDS=() ACTIVE_STATES=()
 
 fail() { printf 'Deployment failed: %s\n' "$*" >&2; exit 1; }
 
@@ -22,19 +23,25 @@ report_failure() {
     printf 'Failure stage: %s\nOld Job ID: %s\nOld job status (last observed): %s\nNew Job ID: %s\n' \
       "$STAGE" "${OLD_JOB_ID:-none}" "$OLD_STATUS" "${NEW_JOB_ID:-unknown}" >&2
     printf 'Manual rollback information: versioned JAR=%s; savepoint=%s; restore mode=%s. No automatic rollback was attempted.\n' \
-      "${VERSIONED_JAR:-not uploaded}" "${SAVEPOINT_URI:-none}" "${RESTORE_MODE:-unset}" >&2
+      "${VERSIONED_JAR:-not uploaded}" "${SAVEPOINT_ACTUAL:-none}" "${RESTORE_MODE:-unset}" >&2
     printf 'The original JAR must be recovered from the previous deployment record; the versioned JAR above is the new artifact. Confirm its original arguments before manual rollback.\n' >&2
   fi
 }
 trap report_failure EXIT
 
 validate_job_id() { [[ "$1" =~ ^[0-9a-f]{32}$ ]] || fail 'invalid Job ID'; }
-validate_savepoint_uri() {
-  local uri=$1 relative
-  [[ "$uri" =~ ^file:///home/zhangdi/workspace/flink_data/savepoints/[A-Za-z0-9._/-]+$ ]] || fail 'invalid savepoint URI'
-  relative=${uri#"file://$REMOTE_SAVEPOINT_DIR/"}
+normalize_savepoint_uri() {
+  local uri=$1 path relative
+  # Keep the reported URI even if validation fails after the old job was stopped.
+  SAVEPOINT_ACTUAL=$uri
+  [[ "$uri" == file:* ]] || fail 'invalid savepoint URI'
+  path=${uri#file:}
+  if [[ "$path" == ///* ]]; then path=${path#//}; fi
+  [[ "$path" =~ ^/home/zhangdi/workspace/flink_data/savepoints/[A-Za-z0-9._/-]+$ ]] || fail 'invalid savepoint URI'
+  relative=${path#"$REMOTE_SAVEPOINT_DIR/"}
   # Lexically safe characters alone do not prevent traversal outside the allowlist.
   case "/$relative/" in *'/../'*|*'/./'*|*'//'*) fail 'invalid savepoint path segment' ;; esac
+  SAVEPOINT_URI="file://$path"
 }
 
 parse_args() {
@@ -49,7 +56,7 @@ parse_args() {
       --savepoint-path)
         (( $# >= 2 )) || fail '--savepoint-path needs a value'
         [[ -z "$SAVEPOINT_URI" ]] || fail 'duplicate --savepoint-path'
-        SAVEPOINT_URI=$2; validate_savepoint_uri "$SAVEPOINT_URI"; shift 2 ;;
+        normalize_savepoint_uri "$2"; shift 2 ;;
       *) fail "unknown argument: $1" ;;
     esac
   done
@@ -57,7 +64,11 @@ parse_args() {
 
 verify_local_build() {
   STAGE="local build"
+  verify_clean_worktree
+  BUILD_REV=$(git rev-parse --short=12 HEAD) || fail 'cannot determine Git revision'
+  [[ "$BUILD_REV" =~ ^[0-9a-f]{12,40}$ ]] || fail 'invalid Git revision'
   mvn -f flink_processer/pom.xml clean verify || fail 'mvn clean verify failed'
+  verify_build_revision
   [[ -s "$LOCAL_JAR" ]] || fail 'built JAR missing or empty'
   local entries expected
   entries=$(jar tf "$LOCAL_JAR") || fail 'cannot inspect built JAR'
@@ -65,6 +76,19 @@ verify_local_build() {
     org/apache/flink/connector/kafka/source/KafkaSource.class com/fasterxml/jackson/databind/ObjectMapper.class; do
     grep -Fx -- "$expected" <<< "$entries" >/dev/null || fail "fat JAR missing $expected"
   done
+}
+
+verify_clean_worktree() {
+  local changes
+  changes=$(git status --porcelain --untracked-files=normal) || fail 'cannot inspect Git worktree'
+  [[ -z "$changes" ]] || fail 'commit or remove local changes before building a versioned deployment'
+}
+
+verify_build_revision() {
+  local revision
+  verify_clean_worktree
+  revision=$(git rev-parse --short=12 HEAD) || fail 'cannot determine Git revision'
+  [[ "$revision" == "$BUILD_REV" ]] || fail 'Git revision changed during deployment build'
 }
 
 # Only constants or separately allowlisted values reach this remote shell string.
@@ -96,37 +120,44 @@ poll_running_jobs() {
   return "$status"
 }
 
-matching_ids() {
+matching_jobs() {
   awk -F ' : ' -v job="$JOB_NAME" '
     {gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $2)}
-    $3 == job " (RUNNING)" {print ($2 == "" ? "invalid-empty-job-id" : $2)}
+    index($3, job " (") == 1 && $3 ~ /\([A-Z]+\)$/ {
+      state=substr($3, length(job)+3); sub(/\)$/, "", state)
+      if (state != "FINISHED" && state != "FAILED" && state != "CANCELED" && state != "SUSPENDED")
+        print ($2 == "" ? "invalid-empty-job-id" : $2), state
+    }
   '
 }
 
 read_running_jobs() {
   STAGE="remote read-only preflight"
   remote "test -x $REMOTE_JAVA_HOME/bin/java && test -x $REMOTE_FLINK_HOME/bin/flink && test -d $REMOTE_DATA_DIR && test -w $REMOTE_DATA_DIR && java -version && flink --version" || fail 'remote environment preflight failed'
-  local listing id ids
+  local listing id state jobs
   listing=$(remote 'flink list --running') || fail 'cannot read running jobs'
-  ids=$(matching_ids <<< "$listing")
-  while IFS= read -r id; do
+  jobs=$(matching_jobs <<< "$listing")
+  while read -r id state; do
     [[ -n "$id" ]] || continue
     validate_job_id "$id"
-    RUNNING_IDS+=("$id")
-  done <<< "$ids"
-  if (( ${#RUNNING_IDS[@]} == 1 )); then
-    OLD_JOB_ID=${RUNNING_IDS[0]}; OLD_STATUS=RUNNING
-  elif (( ${#RUNNING_IDS[@]} == 0 )); then
-    OLD_STATUS="no matching RUNNING job"
+    ACTIVE_IDS+=("$id"); ACTIVE_STATES+=("$state")
+  done <<< "$jobs"
+  if (( ${#ACTIVE_IDS[@]} == 1 )); then
+    OLD_JOB_ID=${ACTIVE_IDS[0]}; OLD_STATUS=${ACTIVE_STATES[0]}
+  elif (( ${#ACTIVE_IDS[@]} == 0 )); then
+    OLD_STATUS="no matching active job"
   else
-    OLD_STATUS="multiple matching RUNNING jobs"
+    OLD_STATUS="multiple matching active jobs"
   fi
-  printf 'Read-only preflight: %s matching RUNNING job(s) for %s\n' "${#RUNNING_IDS[@]}" "$JOB_NAME"
+  printf 'Read-only preflight: %s matching active job(s) for %s; status=%s\n' "${#ACTIVE_IDS[@]}" "$JOB_NAME" "$OLD_STATUS"
 }
 
 verify_execution_gates() {
   STAGE="execution gates"
-  (( ${#RUNNING_IDS[@]} <= 1 )) || fail 'multiple matching running jobs; choose explicitly outside this script'
+  (( ${#ACTIVE_IDS[@]} <= 1 )) || fail 'multiple matching active jobs; choose explicitly outside this script'
+  if (( ${#ACTIVE_IDS[@]} == 1 )); then
+    [[ "$OLD_STATUS" == RUNNING ]] || fail "matching job is $OLD_STATUS; wait for a stable RUNNING state before deployment"
+  fi
   if [[ "$EXECUTE" != true ]]; then
     [[ "$CONFIRMED" == false && -z "$RESTORE_MODE" && -z "$SAVEPOINT_URI" ]] || fail 'deployment flags require --execute'
     return
@@ -149,14 +180,20 @@ cleanup_temp_upload() {
 
 upload_and_verify() {
   STAGE="upload and SHA-256 verification"
-  local sha local_result local_hash remote_result remote_hash
-  sha=$(git rev-parse --short=12 HEAD) || fail 'cannot determine Git revision'
-  [[ "$sha" =~ ^[0-9a-f]{12,40}$ ]] || fail 'invalid Git revision'
-  VERSIONED_JAR="$REMOTE_DATA_DIR/flink-processer-$sha.jar"
-  TEMP_JAR="$REMOTE_DATA_DIR/.flink-processer-$sha-$$.jar.tmp"
+  local local_result local_hash remote_result remote_hash existing
+  verify_build_revision
+  VERSIONED_JAR="$REMOTE_DATA_DIR/flink-processer-$BUILD_REV.jar"
+  TEMP_JAR="$REMOTE_DATA_DIR/.flink-processer-$BUILD_REV-$$.jar.tmp"
   local_result=$(shasum -a 256 "$LOCAL_JAR") || fail 'local SHA-256 failed'
   local_hash=${local_result%% *}
   [[ "$local_hash" =~ ^[0-9a-f]{64}$ ]] || fail 'invalid local SHA-256'
+  existing=$(remote "if test -e $VERSIONED_JAR || test -L $VERSIONED_JAR; then sha256sum $VERSIONED_JAR; else printf 'absent\\n'; fi") || fail 'cannot inspect existing versioned JAR'
+  if [[ "$existing" != absent ]]; then
+    remote_hash=${existing%% *}
+    [[ "$remote_hash" =~ ^[0-9a-f]{64}$ && "$remote_hash" == "$local_hash" ]] || fail 'existing versioned JAR SHA-256 differs; old job was not stopped'
+    printf 'Reusing verified versioned JAR: %s\n' "$VERSIONED_JAR"
+    return 0
+  fi
   if ! scp -o BatchMode=yes -o ConnectTimeout=10 "$LOCAL_JAR" "$SSH_HOST:$TEMP_JAR"; then
     cleanup_temp_upload; fail 'upload failed'
   fi
@@ -167,7 +204,10 @@ upload_and_verify() {
   if [[ ! "$remote_hash" =~ ^[0-9a-f]{64}$ || "$remote_hash" != "$local_hash" ]]; then
     cleanup_temp_upload; fail 'upload SHA-256 mismatch; old job was not stopped'
   fi
-  remote "mv -f $TEMP_JAR $VERSIONED_JAR" || { cleanup_temp_upload; fail 'atomic upload move failed'; }
+  # Same-directory hard link publishes atomically and fails if a concurrent deploy
+  # created this name. It can never replace an artifact retained for rollback.
+  remote "ln -T $TEMP_JAR $VERSIONED_JAR" || { cleanup_temp_upload; fail 'atomic upload installation failed; versioned path was not overwritten'; }
+  cleanup_temp_upload
 }
 
 stop_with_savepoint() {
@@ -176,10 +216,9 @@ stop_with_savepoint() {
   local output uri
   OLD_STATUS="stop requested; terminal state unverified"
   output=$(remote "flink stop --savepointPath $REMOTE_SAVEPOINT_DIR $OLD_JOB_ID") || fail 'savepoint stop failed; inspect old job state'
-  OLD_STATUS="stopped with savepoint"
+  OLD_STATUS="stop accepted; terminal state unverified"
   uri=$(sed -n 's/^Savepoint completed\. Path: //p' <<< "$output")
-  validate_savepoint_uri "$uri"
-  SAVEPOINT_URI=$uri
+  normalize_savepoint_uri "$uri"
   remote "test -r ${SAVEPOINT_URI#file://}/_metadata" || fail 'generated savepoint _metadata is not readable'
 }
 
@@ -188,7 +227,7 @@ cancel_without_restore() {
   STAGE="cancel without restore"
   OLD_STATUS="cancel requested; terminal state unverified"
   remote "flink cancel $OLD_JOB_ID" || fail 'cancel failed; inspect old job state'
-  OLD_STATUS="cancelled without savepoint"
+  OLD_STATUS="cancel accepted; terminal state unverified"
 }
 
 submit_job() {
@@ -196,7 +235,6 @@ submit_job() {
   local output command
   local restore_args=()
   if [[ "$RESTORE_MODE" == savepoint ]]; then
-    validate_savepoint_uri "$SAVEPOINT_URI"
     restore_args=(-s "$SAVEPOINT_URI")
   fi
   command="flink run --detached"
@@ -211,25 +249,33 @@ submit_job() {
 
 wait_until_running() {
   STAGE="wait for new RUNNING job"
-  local attempt listing ids id deadline=$((SECONDS + 30))
+  local attempt listing jobs id state count new_running old_active deadline=$((SECONDS + 30))
   for (( attempt=0; attempt<30 && SECONDS<deadline; attempt++ )); do
     local poll_status=0
     listing=$(poll_running_jobs "$deadline") || poll_status=$?
     if (( poll_status == 124 )); then fail 'new job observation exceeded the 30-second polling window'; fi
     (( poll_status == 0 )) || fail 'cannot observe new job state'
-    ids=$(matching_ids <<< "$listing")
-    while IFS= read -r id; do
+    count=0 new_running=false old_active=false
+    jobs=$(matching_jobs <<< "$listing")
+    while read -r id state; do
       [[ -n "$id" ]] || continue
       validate_job_id "$id"
-      if [[ "$id" == "$NEW_JOB_ID" ]]; then
-        printf 'Deployment successful: Job ID %s is RUNNING; JAR=%s\n' "$NEW_JOB_ID" "$VERSIONED_JAR"
-        printf 'Restore mode: %s\nSavepoint: %s\n' "$RESTORE_MODE" "${SAVEPOINT_URI:-not used}"
-        return 0
+      count=$((count + 1))
+      if [[ "$id" == "$OLD_JOB_ID" ]]; then
+        old_active=true; OLD_STATUS=$state
       fi
-    done <<< "$ids"
+      if [[ "$id" == "$NEW_JOB_ID" && "$state" == RUNNING ]]; then new_running=true; fi
+    done <<< "$jobs"
+    if [[ -n "$OLD_JOB_ID" && "$old_active" == false ]]; then OLD_STATUS="not active"; fi
+    if [[ "$new_running" == true && "$old_active" == false && "$count" == 1 ]]; then
+      printf 'Deployment successful: Job ID %s is RUNNING; JAR=%s\n' "$NEW_JOB_ID" "$VERSIONED_JAR"
+      printf 'Old job status (last observed): %s\n' "$OLD_STATUS"
+      printf 'Restore mode: %s\nSavepoint: %s\n' "$RESTORE_MODE" "${SAVEPOINT_URI:-not used}"
+      return 0
+    fi
     if (( attempt<29 && SECONDS<deadline )); then sleep 1; fi
   done
-  fail 'new Job ID did not enter RUNNING within the 30-second polling window'
+  fail 'new Job ID was not uniquely RUNNING with the old job inactive within the 30-second polling window'
 }
 
 main() {
