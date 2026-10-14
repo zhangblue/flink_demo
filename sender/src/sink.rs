@@ -1,5 +1,9 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -8,14 +12,15 @@ use rdkafka::error::KafkaError;
 use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use rdkafka::types::RDKafkaErrorCode;
 use thiserror::Error;
-use tokio::sync::mpsc;
-use tokio::time::{Instant, sleep_until, timeout_at};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep_until, timeout_at};
 
 use crate::config::KafkaConfig;
 use crate::model::MobileEvent;
 use crate::rate::GlobalRateLimiter;
 
 pub const MAX_KAFKA_EVENT_BYTES: usize = 900_000;
+const SPEED_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
 pub type DeliveryAck = Pin<Box<dyn Future<Output = Result<(), SinkError>> + Send + 'static>>;
 
@@ -130,11 +135,36 @@ pub struct DispatchReport {
     pub flush_error: Option<String>,
 }
 
-fn record_delivery(report: &mut DispatchReport, result: Result<(), SinkError>) {
+fn record_delivery(
+    report: &mut DispatchReport,
+    result: Result<(), SinkError>,
+    delivered_in_window: &AtomicU64,
+) {
     if result.is_ok() {
         report.delivered += 1;
+        delivered_in_window.fetch_add(1, Ordering::Relaxed);
     } else {
         report.failed += 1;
+    }
+}
+
+async fn report_delivery_speed(
+    delivered_in_window: Arc<AtomicU64>,
+    mut shutdown: oneshot::Receiver<()>,
+) {
+    let first_tick = Instant::now() + SPEED_REPORT_INTERVAL;
+    let mut interval = interval_at(first_tick, SPEED_REPORT_INTERVAL);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            _ = interval.tick() => {
+                let speed = delivered_in_window.swap(0, Ordering::Relaxed);
+                tracing::info!("当前发送速度 {speed} 条/秒");
+            }
+        }
     }
 }
 
@@ -154,6 +184,12 @@ pub async fn dispatch_events<S: EventSink>(
             return report;
         }
     };
+    let delivered_in_window = Arc::new(AtomicU64::new(0));
+    let (speed_shutdown_tx, speed_shutdown_rx) = oneshot::channel();
+    let speed_reporter = tokio::spawn(report_delivery_speed(
+        delivered_in_window.clone(),
+        speed_shutdown_rx,
+    ));
     let max_in_flight = max_in_flight.max(1);
 
     loop {
@@ -164,7 +200,7 @@ pub async fn dispatch_events<S: EventSink>(
                 biased;
                 result = in_flight.next() => {
                     if let Some(result) = result {
-                        record_delivery(&mut report, result);
+                        record_delivery(&mut report, result, &delivered_in_window);
                     }
                     continue;
                 }
@@ -176,7 +212,7 @@ pub async fn dispatch_events<S: EventSink>(
         };
         while in_flight.len() >= max_in_flight {
             if let Some(result) = in_flight.next().await {
-                record_delivery(&mut report, result);
+                record_delivery(&mut report, result, &delivered_in_window);
             }
         }
 
@@ -223,7 +259,9 @@ pub async fn dispatch_events<S: EventSink>(
                         sleep_until(next_retry).await;
                     } else {
                         match timeout_at(deadline, in_flight.next()).await {
-                            Ok(Some(result)) => record_delivery(&mut report, result),
+                            Ok(Some(result)) => {
+                                record_delivery(&mut report, result, &delivered_in_window)
+                            }
                             Ok(None) => continue,
                             Err(_) => {
                                 queue_full_timed_out = true;
@@ -250,24 +288,111 @@ pub async fn dispatch_events<S: EventSink>(
     }
 
     while let Some(result) = in_flight.next().await {
-        record_delivery(&mut report, result);
+        record_delivery(&mut report, result, &delivered_in_window);
     }
     if let Err(error) = sink.flush(sink.message_timeout()) {
         tracing::error!(topic = sink.topic(), %error, "producer flush failed");
         report.flush_error = Some(error.to_string());
+    }
+    let _ = speed_shutdown_tx.send(());
+    if let Err(error) = speed_reporter.await {
+        tracing::error!(%error, "delivery speed reporter failed");
     }
     report
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DeliveryAck, DispatchReport, EventSink, SinkError, dispatch_events, encode_event};
+    use super::{
+        DeliveryAck, DispatchReport, EventSink, SinkError, dispatch_events, encode_event,
+        record_delivery, report_delivery_speed,
+    };
     use crate::model::{EventPayload, MobileEvent, ProtocolType, StartPayload};
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::sync::{Notify, mpsc, oneshot};
     use uuid::Uuid;
+
+    #[test]
+    fn delivery_speed_counts_only_successful_acknowledgements() {
+        let mut report = DispatchReport::default();
+        let speed_count = AtomicU64::new(0);
+
+        record_delivery(&mut report, Ok(()), &speed_count);
+        record_delivery(
+            &mut report,
+            Err(SinkError::Delivery("injected".into())),
+            &speed_count,
+        );
+
+        assert_eq!((report.delivered, report.failed), (1, 1));
+        assert_eq!(speed_count.load(Ordering::Relaxed), 1);
+    }
+
+    struct CaptureWriter(Arc<Mutex<Vec<u8>>>, Arc<Notify>);
+
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            self.1.notify_one();
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn speed_reporter_waits_one_second_resets_and_stops() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let captured = output.clone();
+        let write_notification = Arc::new(Notify::new());
+        let writer_notification = write_notification.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || CaptureWriter(captured.clone(), writer_notification.clone()))
+            .finish();
+        let _subscriber_guard = tracing::subscriber::set_default(subscriber);
+
+        let speed_count = Arc::new(AtomicU64::new(0));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let reporter = tokio::spawn(report_delivery_speed(speed_count.clone(), shutdown_rx));
+        tokio::task::yield_now().await;
+        speed_count.fetch_add(3, Ordering::Relaxed);
+
+        tokio::time::advance(Duration::from_millis(999)).await;
+        tokio::task::yield_now().await;
+        let before_first_tick = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(!before_first_tick.contains("当前发送速度"));
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::time::timeout(Duration::from_millis(10), write_notification.notified())
+            .await
+            .unwrap();
+        let first_tick = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(first_tick.contains("当前发送速度 3 条/秒"), "{first_tick}");
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::time::timeout(Duration::from_millis(10), write_notification.notified())
+            .await
+            .unwrap();
+        let second_tick = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(
+            second_tick.contains("当前发送速度 0 条/秒"),
+            "{second_tick}"
+        );
+
+        shutdown_tx.send(()).unwrap();
+        reporter.await.unwrap();
+        let length_after_shutdown = output.lock().unwrap().len();
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(output.lock().unwrap().len(), length_after_shutdown);
+    }
 
     #[derive(Clone, Debug)]
     struct Recorded {
