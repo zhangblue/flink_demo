@@ -16,6 +16,13 @@ public class OutputEventKafkaSerializer implements KafkaRecordSerializationSchem
         this.topic = topic;
     }
 
+    /**
+     * 触发条件：Kafka Sink 写出每个 {@link OutputEvent} 前调用一次。
+     *
+     * <p>作用：将组合 key 和 JSON value 均以 UTF-8 编码，写入构造时指定的固定 topic。
+     * 当前 {@link KafkaSinkContext} 和输入时间戳不参与分区选择或 record timestamp 设置；
+     * 返回的 record 未显式指定分区或时间戳。空或空白 key 通过异常阻止错误记录发送。</p>
+     */
     @Override
     public ProducerRecord<byte[], byte[]> serialize(OutputEvent event, KafkaSinkContext context, Long timestamp) {
         if (event.key() == null || event.key().isBlank()) {

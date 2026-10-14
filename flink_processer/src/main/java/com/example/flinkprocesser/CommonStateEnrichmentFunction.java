@@ -33,11 +33,11 @@ public class CommonStateEnrichmentFunction extends KeyedProcessFunction<String, 
     private transient ValueState<Long> cleanupTimerState;
 
     /**
-     * Flink 创建并初始化该算子实例时触发一次，早于该实例处理任何输入消息。
+     * 触发条件：Flink 为每个并行算子实例完成 RuntimeContext 和恢复状态初始化后、处理首条输入前调用一次。
      *
-     * <p>此时 RuntimeContext 已可用，因此在这里注册两个托管 {@link ValueState}：一个保存 common
-     * 元数据，另一个保存最新事件时间清理定时器的时间戳。状态描述符只初始化一次，但实际状态值由 Flink
-     * 按当前 keyed stream 的 key 隔离，并与事件时间定时器一起参与 checkpoint/savepoint。</p>
+     * <p>作用：取得由 Flink 托管的两个 keyed {@link ValueState}：一个保存 common 元数据，另一个保存
+     * 最新事件时间清理定时器的时间戳。状态按当前 {@code udid + start_id} 隔离，并与事件时间定时器
+     * 一起随 checkpoint/savepoint 持久化和恢复。</p>
      */
     @Override
     public void open(OpenContext openContext) throws Exception {
@@ -48,9 +48,9 @@ public class CommonStateEnrichmentFunction extends KeyedProcessFunction<String, 
     }
 
     /**
-     * 同一算子实例每收到一条已经按组合 key 分组的事件时触发。
+     * 触发条件：keyed stream 每到达一条输入事件时调用一次，Flink 已设置该事件所属的当前 key 上下文。
      *
-     * <p>处理顺序如下：</p>
+     * <p>作用：在当前 key 上管理清理截止时间和 common 状态，并按以下顺序完成即时补全及互斥路由：</p>
      * <ol>
      *   <li>无论消息类型是什么，先计算事件时间加 30 秒的清理候选值，只在候选值更晚时续期。
      *       如果最终截止值已经被当前 watermark 到达，则移除过去的定时器，并在本条消息完成即时路由后
@@ -62,7 +62,8 @@ public class CommonStateEnrichmentFunction extends KeyedProcessFunction<String, 
      * </ol>
      *
      * <p>主输出和错误侧输出互斥，一条输入消息最多进入其中一个；合法 {@code common} 不进入任何
-     * 输出流。</p>
+     * 输出流。状态访问、时间计算或 JSON 补全等异常向 Flink 传播，由运行时处理本次调用失败；
+     * 错误侧输出只处理代码中显式判定的元数据不完整或缺失情况。</p>
      */
     @Override
     public void processElement(EventRecord event, Context ctx, Collector<OutputEvent> out) throws Exception {
@@ -135,12 +136,13 @@ public class CommonStateEnrichmentFunction extends KeyedProcessFunction<String, 
     }
 
     /**
-     * Flink 的 watermark 达到某个已注册的事件时间截止值时触发，并自动恢复注册该定时器的 key 上下文。
+     * 触发条件：watermark 推进到或越过已注册的事件时间定时器时间戳时调用，
+     * Flink 自动恢复注册该定时器时所属的 key 上下文。
      *
-     * <p>回调时间戳只有与 {@link #cleanupTimerState} 保存的最新时间戳一致时，才表示该 key 的最新
+     * <p>作用：只清理当前 key 的最新截止时间。回调时间戳只有与 {@link #cleanupTimerState}
+     * 保存的最新时间戳一致时，才表示该 key 的最新
      * 事件时间之后 30 秒的边界已被 watermark 到达，此时同时清除 common 元数据和定时器时间戳状态。
-     * 若旧定时器在被删除后仍因竞态或恢复过程产生回调，时间戳不一致，函数会忽略它，避免误删后来续期的状态。
-     * 定时器只负责清理，
+     * 时间戳不一致的陈旧回调会被忽略，避免误删后来续期的状态。定时器只负责清理，
      * 不产生主输出或错误输出。</p>
      */
     @Override
