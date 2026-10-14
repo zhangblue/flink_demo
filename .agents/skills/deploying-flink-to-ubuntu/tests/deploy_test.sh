@@ -332,7 +332,8 @@ test_existing_conflicting_version_is_atomically_overwritten_before_old_job_stops
   assert_log_contains "mv -f $DATA/.flink-processer-abcdef123456-"
   assert_log_contains "sha256sum $DATA/flink-processer-abcdef123456.jar"
   assert_log_not_contains 'ln '
-  assert_before 'scp ' 'mv -f '
+  assert_before 'scp ' "sha256sum $DATA/.flink-processer-abcdef123456-"
+  assert_before "sha256sum $DATA/.flink-processer-abcdef123456-" 'mv -f '
   assert_before_last 'mv -f ' "sha256sum $DATA/flink-processer-abcdef123456.jar"
   [[ $(grep -c "sha256sum $DATA/flink-processer-abcdef123456.jar" "$CALL_LOG") == 2 ]]
   assert_last_before "sha256sum $DATA/flink-processer-abcdef123456.jar" "flink cancel $OLD"
@@ -343,10 +344,26 @@ test_absent_version_is_atomically_installed_and_verified() {
   assert_log_contains "mv -f $DATA/.flink-processer-abcdef123456-"
   assert_log_contains "sha256sum $DATA/flink-processer-abcdef123456.jar"
   assert_log_not_contains 'ln '
-  assert_before 'scp ' 'mv -f '
+  assert_before 'scp ' "sha256sum $DATA/.flink-processer-abcdef123456-"
+  assert_before "sha256sum $DATA/.flink-processer-abcdef123456-" 'mv -f '
   assert_before_last 'mv -f ' "sha256sum $DATA/flink-processer-abcdef123456.jar"
   [[ $(grep -c "sha256sum $DATA/flink-processer-abcdef123456.jar" "$CALL_LOG") == 2 ]]
   assert_last_before "sha256sum $DATA/flink-processer-abcdef123456.jar" "flink cancel $OLD"
+}
+test_overwrite_temp_checksum_failure_keeps_old_job_running() {
+  local checksum
+  for checksum in bad error; do
+    setup "${FUNCNAME[0]}_$checksum"
+    export FAKE_EXISTING=different FAKE_TEMP_CHECKSUM=$checksum
+    execute stateless; assert_failed
+    assert_log_contains 'scp '
+    assert_before 'scp ' "sha256sum $DATA/.flink-processer-abcdef123456-"
+    assert_log_contains "rm -f $DATA/.flink-processer-abcdef123456-"
+    assert_log_not_contains 'mv -f '
+    assert_log_not_contains 'flink cancel '
+    assert_log_not_contains 'flink stop '
+    assert_log_not_contains 'flink run '
+  done
 }
 test_overwrite_move_failure_keeps_old_job_running() {
   export FAKE_EXISTING=different FAKE_MOVE=bad
