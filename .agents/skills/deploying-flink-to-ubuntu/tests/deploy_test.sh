@@ -213,11 +213,16 @@ test_savepoint_mode_stops_without_drain_and_restores_with_s() {
   assert_log_contains "flink stop --savepointPath $DATA/savepoints $OLD"
   assert_log_not_contains '--drain'
   assert_log_contains "flink run --detached -s $RESTORE -c com.example.flinkprocesser.EventEnrichmentJob $DATA/flink-processer-abcdef123456.jar"
-  assert_before 'sha256sum ' 'ln '; assert_before 'ln ' 'flink stop '; assert_before 'flink stop ' 'flink run '
+  assert_before_last 'mv -f ' "sha256sum $DATA/flink-processer-abcdef123456.jar"
+  assert_last_before "sha256sum $DATA/flink-processer-abcdef123456.jar" 'flink stop '
+  assert_before 'flink stop ' 'flink run '
 }
 test_stateless_mode_cancels_and_submits_without_s() {
   execute stateless; assert_ok; assert_log_contains "flink cancel $OLD"; assert_log_not_contains ' -s '
-  assert_log_not_contains '_metadata'; assert_log_not_contains 'flink stop '; assert_before 'ln ' 'flink cancel '; assert_before 'flink cancel ' 'flink run '
+  assert_log_not_contains '_metadata'; assert_log_not_contains 'flink stop '
+  assert_before_last 'mv -f ' "sha256sum $DATA/flink-processer-abcdef123456.jar"
+  assert_last_before "sha256sum $DATA/flink-processer-abcdef123456.jar" 'flink cancel '
+  assert_before 'flink cancel ' 'flink run '
   assert_log_contains '--bootstrap-servers 192.168.250.106:9092 --input-topic flink_demo --output-topic flink_output --error-topic flink_error --group-id flink-processer --parallelism 1 --checkpoint-interval-ms 60000'
   assert_log_contains "--checkpoint-storage-uri file://$DATA/checkpoints --savepoint-storage-uri file://$DATA/savepoints"
   assert_log_contains 'export JAVA_HOME=/home/zhangdi/works/jdk-21.0.12.1+1; export PATH=/home/zhangdi/works/flink-2.3.0/bin:/home/zhangdi/works/jdk-21.0.12.1+1/bin:"$PATH"'
