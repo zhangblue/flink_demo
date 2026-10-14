@@ -4,6 +4,8 @@
 
 在仓库中新增项目级 Skill，统一 `flink_processer` 的构建、上传和 Ubuntu 单机 Flink 部署流程。未来完成 Flink 代码修改后，可使用该 Skill 将验证通过的版本化 JAR 上传到服务器，并在用户明确确认后替换当前作业。
 
+本次同时调整 Kafka Source 的无 offset 启动策略：优先恢复 Flink checkpoint/savepoint 中的 source offset，其次使用 consumer group 已提交 offset；只有两者都不可用时，从 Kafka 各分区的最新位置开始，不回放此前历史消息。
+
 Skill 只服务本仓库，不修改 Ubuntu 的全局 Flink 配置，也不自动清理旧 JAR、checkpoint 或 savepoint。
 
 ## 固定环境
@@ -20,6 +22,16 @@ Skill 只服务本仓库，不修改 Ubuntu 的全局 Flink 配置，也不自�
 - Flink 作业名：`mobile-event-common-enrichment`
 
 上传后的文件名使用当前 Git 提交的短 SHA：`flink-processer-<short-sha>.jar`。旧版本保留，供人工回滚。
+
+## Kafka offset 回退规则
+
+`KafkaSource` 使用 committed offsets 初始化器，并把缺失 committed offset 时的回退策略由 `EARLIEST` 改为 `LATEST`。该配置只影响没有可恢复 source 状态且 consumer group 对相应分区没有有效已提交 offset 的启动：
+
+1. 从 checkpoint/savepoint 恢复时，使用快照内记录的 source offset；
+2. 无快照状态但存在 consumer group committed offset 时，从 committed offset 继续；
+3. 两者都不可用时，从部署时 Kafka 分区末尾开始，只消费之后到达的新数据。
+
+实现需同步更新拓扑测试和 `flink_processer/README.md`，避免文档继续声称新 group 会从最早位置回放。
 
 ## 组成
 
@@ -106,6 +118,7 @@ Skill 只服务本仓库，不修改 Ubuntu 的全局 Flink 配置，也不自�
 ## 验证
 
 - 使用 Skill 初始化器/校验器检查目录、frontmatter 和未完成占位符。
+- 通过拓扑测试验证 Kafka Source 的 committed-offset 缺失回退策略为 `LATEST`，并验证 README 与实现一致。
 - 对部署脚本运行 shell 语法检查和只读 dry-run。
 - 使用隔离的命令替身验证以下行为：
   - 未提供执行模式时不会上传、停止或提交；
