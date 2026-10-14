@@ -187,6 +187,24 @@ test_remote_preflight_failure_never_mutates() { export FAKE_PREFLIGHT=bad; execu
 test_exact_job_name_does_not_cancel_unrelated_job() { export FAKE_JOBS=unrelated; execute stateless; assert_ok; assert_log_not_contains 'flink cancel '; }
 test_unknown_argument_never_contacts_remote() { run_deploy --wat; assert_failed; assert_log_not_contains 'ssh '; assert_no_mutation; }
 
+# These output contracts let the Skill report actual recovery choices and paths.
+test_success_reports_generated_savepoint_and_restore_mode() {
+  execute savepoint; assert_ok
+  grep -Fx 'Restore mode: savepoint' "$CASE/output" >/dev/null
+  grep -Fx "Savepoint: $RESTORE" "$CASE/output" >/dev/null
+}
+test_success_reports_provided_savepoint_and_restore_mode() {
+  export FAKE_JOBS=none
+  execute savepoint --savepoint-path "$RESTORE"; assert_ok
+  grep -Fx 'Restore mode: savepoint' "$CASE/output" >/dev/null
+  grep -Fx "Savepoint: $RESTORE" "$CASE/output" >/dev/null
+}
+test_success_reports_stateless_without_savepoint() {
+  execute stateless; assert_ok
+  grep -Fx 'Restore mode: stateless' "$CASE/output" >/dev/null
+  grep -Fx 'Savepoint: not used' "$CASE/output" >/dev/null
+}
+
 for test in $(declare -F | awk '{print $3}' | grep '^test_'); do
   setup "$test"
   # Failures must stop the test immediately, even though the parent collects all results.

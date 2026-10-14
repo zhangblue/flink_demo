@@ -223,6 +223,7 @@ wait_until_running() {
       validate_job_id "$id"
       if [[ "$id" == "$NEW_JOB_ID" ]]; then
         printf 'Deployment successful: Job ID %s is RUNNING; JAR=%s\n' "$NEW_JOB_ID" "$VERSIONED_JAR"
+        printf 'Restore mode: %s\nSavepoint: %s\n' "$RESTORE_MODE" "${SAVEPOINT_URI:-not used}"
         return 0
       fi
     done <<< "$ids"

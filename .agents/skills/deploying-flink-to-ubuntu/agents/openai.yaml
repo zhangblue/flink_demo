@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy Flink to Ubuntu"
+  short_description: "安全部署本项目 Flink 作业到 Ubuntu 服务器"
+  default_prompt: "Use $deploying-flink-to-ubuntu to deploy the verified Flink processor to Ubuntu."
