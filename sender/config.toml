@@ -1,14 +1,39 @@
 [kafka]
+# Kafka broker 地址；多个地址使用英文逗号分隔，例如 "host1:9092,host2:9092"。
 brokers = "192.168.250.106:9092"
+
+# 接收模拟事件的 Kafka topic，不能为空。
 topic = "flink_demo"
+
+# Kafka producer 使用的压缩算法；当前使用 LZ4。
 compression = "lz4"
+
+# 单条消息从入队到投递完成的超时时间，单位为毫秒，必须大于 0。
 message_timeout_ms = 5000
 
 [simulation]
-device_count = 100
-messages_per_second = 500
-startup_interval_min_secs = 30
-startup_interval_max_secs = 120
+# 同时运行的模拟设备数量，范围为 1～1,000,000。
+# 还需满足：device_count × installed_apps_max ≤ 1,000,000。
+device_count = 3000
+
+# 所有设备共享的全局发送速度，单位为消息数/秒，必须大于 0。
+# 该值不是单台设备的发送速度，并且必须能形成至少 1 纳秒的限速间隔。
+messages_per_second = 10000
+
+# 单台设备两次启动之间的最短等待时间，单位为秒，必须大于 0。
+startup_interval_min_secs = 5
+
+# 单台设备两次启动之间的最长等待时间，单位为秒。
+# 必须大于 0，且不得小于 startup_interval_min_secs。
+startup_interval_max_secs = 10
+
+# 每台设备模拟安装的 App 数量下限，必须大于 0。
 installed_apps_min = 20
-installed_apps_max = 80
+
+# 每台设备模拟安装的 App 数量上限，最大为 4,000。
+# 必须大于 0，且不得小于 installed_apps_min。
+installed_apps_max = 40
+
+# 生成器到 Kafka 发送器之间的内存队列容量，范围为 1～1,000,000。
+# 还需满足：channel_capacity × installed_apps_max ≤ 1,000,000。
 channel_capacity = 10000
