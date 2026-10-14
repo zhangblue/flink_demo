@@ -34,6 +34,11 @@ public record JobConfig(
         }
     }
 
+    /**
+     * 由作业入口在启动时调用一次，以命令行参数覆盖默认值并生成配置。
+     *
+     * <p>所有配置均经构造器统一校验；缺值、非法数值或目录 URI 会向入口传播异常。</p>
+     */
     public static JobConfig fromArgs(String[] args) {
         ParameterTool parameters = ParameterTool.fromArgs(args);
         return new JobConfig(
@@ -64,6 +69,12 @@ public record JobConfig(
         return value.trim();
     }
 
+    /**
+     * 将快照目录限定为无歧义的绝对本地 file URI。
+     *
+     * <p>拒绝 authority 以避免指向远程主机；Flink Path(String) 对 query/fragment 和百分号编码
+     * 的解释并非标准 URI 元数据及解码规则，因此一并拒绝，避免实际目录偏离配置意图。</p>
+     */
     private static String absoluteFileUri(String value, String name) {
         String validated = requiredString(value, name);
         URI uri = URI.create(validated);

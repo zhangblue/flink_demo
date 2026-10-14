@@ -12,6 +12,12 @@ public final class CommonMetadataJson {
     private CommonMetadataJson() {
     }
 
+    /**
+     * 从 common 事件的 {@code payload} 提取六个元数据字段，不读取顶层同名字段。
+     *
+     * <p>缺失、非字符串或空白值归一化为 null，是否可用由 {@link CommonMetadata#isComplete()}
+     * 判断；JSON 解析失败向调用方传播。</p>
+     */
     public static CommonMetadata extract(String json) throws JsonProcessingException {
         JsonNode payload = MAPPER.readTree(json).path("payload");
         return new CommonMetadata(
@@ -23,6 +29,12 @@ public final class CommonMetadataJson {
                 nonblankText(payload.path("os_version")));
     }
 
+    /**
+     * 将元数据写入事件 JSON 顶层，始终覆盖六个同名字段；缺失值写为显式 JSON null。
+     *
+     * <p>输入应为 JSON 对象；复制原始对象以保留 payload 和其他未知字段，仅补全顶层字段。
+     * JSON 解析或生成失败向调用方传播。</p>
+     */
     public static String enrich(String json, CommonMetadata metadata) throws JsonProcessingException {
         ObjectNode output = ((ObjectNode) MAPPER.readTree(json)).deepCopy();
         setField(output, "self_app_package", metadata.getSelfAppPackage());
