@@ -14,6 +14,10 @@ RUST_LOG=debug cargo run --manifest-path sender/Cargo.toml -- --config sender/co
 
 默认 CLI 路径为当前工作目录下的 `config.toml`。因此从仓库根目录运行时请显式传 `--config sender/config.toml`；在 `sender/` 目录内运行可省略 `--config`。日志默认级别为 `info`，可用 `RUST_LOG=debug` 或 `RUST_LOG=mobile_event_sender=debug` 调整。按 Ctrl+C 后程序停止生成新周期，尽量排空待发送消息并退出。
 
+程序默认每秒输出一次最近 1 秒内收到 Kafka broker 成功确认的消息数量，例如 `当前发送速度 1000 条/秒`。进入本地 producer 队列但尚未确认、投递失败或超时的消息不计入；空闲周期打印 0。该消息使用 INFO 级别，若通过 RUST_LOG 屏蔽 INFO 日志则不会显示。
+
+`simulation.messages_per_second` 是所有设备共享的全局目标限速；上述日志显示的是实际成功确认速度。
+
 ## 配置
 
 `sender/config.toml` 默认内容：

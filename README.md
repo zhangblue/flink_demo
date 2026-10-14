@@ -13,6 +13,7 @@
 - 发送器写入输入 topic 时，Kafka record key 使用 `udid`，确保同一设备的事件进入同一分区并保持顺序。
 - JSON 只使用 Unix 毫秒时间戳字段 `event_timestamp`，不包含 `event_time`。
 - 支持优雅关闭、发送队列背压、投递确认和 QueueFull 限时重试。
+- 默认每秒输出最近 1 秒内 Kafka broker 成功确认的消息数量，显示实际成功确认速度；空闲周期打印 0。
 
 ## 项目结构
 
@@ -64,6 +65,8 @@ channel_capacity = 10000
 
 `messages_per_second` 是所有设备共享的全局速度，而不是单台设备的速度。
 
+该配置值是全局目标限速，运行日志中的速度是实际成功确认速度。
+
 ### 构建与运行
 
 从项目根目录执行：
@@ -78,6 +81,14 @@ cargo run --manifest-path sender/Cargo.toml --release -- --config sender/config.
 ```bash
 RUST_LOG=debug cargo run --manifest-path sender/Cargo.toml -- --config sender/config.toml
 ```
+
+程序默认在完整的首个 1 秒后，以 INFO 级别每秒打印最近 1 秒内收到 Kafka broker 成功确认的消息数量，例如：
+
+```text
+当前发送速度 1000 条/秒
+```
+
+进入本地 producer 队列但尚未确认、投递失败或超时的消息不计入；空闲周期打印 0。若通过 `RUST_LOG` 屏蔽 INFO 日志，该消息不会显示。
 
 按 `Ctrl+C` 后，程序停止创建新的启动周期，排空已进入发送流程的消息并退出。
 
