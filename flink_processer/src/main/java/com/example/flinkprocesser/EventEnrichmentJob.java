@@ -80,7 +80,8 @@ public final class EventEnrichmentJob {
     }
 
     /**
-     * 为每个目标 topic 创建独立 Kafka Sink，由 {@link OutputEventKafkaSerializer} 统一生成 record key。
+     * 为每个目标 topic 创建独立 Kafka Sink；record key 已由 {@link EventRecord#recordKey()} 生成并存入
+     * {@link OutputEvent}，由 {@link OutputEventKafkaSerializer} 统一校验、按 UTF-8 编码并写入 ProducerRecord。
      *
      * <p>采用至少一次投递语义，故障恢复边界可能重复写出已投递记录。</p>
      */
